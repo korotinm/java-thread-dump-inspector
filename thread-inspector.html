@@ -326,6 +326,20 @@
 
   function nThreads(n) { return n + (n === 1 ? " thread" : " threads"); }
 
+  // Collapses a digit run to "N" only if it borders a non-alphanumeric character (or the
+  // start/end of the string) on at least one side. That is what separates a worker index —
+  // "-thread-19", "LauncherServer-121", the octets in "10.233.10.1" — from a digit that is
+  // just part of the name, like the "2" in "a2p-supervisor". Blind /\d+/g would turn the
+  // latter into "aNp-supervisor" and misgroup it.
+  function normalizeName(name) {
+    return name.replace(/\d+/g, function (run, offset, str) {
+      var before = offset > 0 ? str.charAt(offset - 1) : "";
+      var after = offset + run.length < str.length ? str.charAt(offset + run.length) : "";
+      var isBoundary = function (c) { return c === "" || !/[a-zA-Z0-9]/.test(c); };
+      return (isBoundary(before) || isBoundary(after)) ? "N" : run;
+    });
+  }
+
   // ------------------------------------------------------------------ parsing
 
   var RE_HEAD_A = /^"(.*)"\s+-\s+Thread\s+t@(\d+)/;
@@ -410,7 +424,7 @@
     push();
 
     threads.forEach(function (th) {
-      th.norm = th.name.replace(/\d+/g, "N");
+      th.norm = normalizeName(th.name);
       th.top = th.frames.length ? th.frames[0] : "(no stack)";
     });
 
@@ -469,11 +483,13 @@
 
   // ------------------------------------------------------------- pools & hints
 
-  // Pool name: drop the trailing worker index and the word "thread".
-  // spark-job-thread-N -> spark-job, pool-N-thread-N -> pool-N, LauncherServer-N -> LauncherServer
-  function poolOf(t) {
-    return t.norm.replace(/[-_. #]*N$/, "").replace(/[-_.]?thread$/i, "") || t.norm;
-  }
+  // Pool name is the normalized thread name, unchanged. An earlier version stripped a
+  // trailing "-N" as the worker index, which reads well for "spark-job-thread-19" but
+  // truncates anything else ending in a number — "RMI TCP Connection(3)-127.0.0.1" lost
+  // its last IP octet. Naming schemes vary too much to guess which trailing number is an
+  // index, and stripping also merged distinct groups: "foo-N" and "foo-thread-N" both
+  // collapsed to "foo". Labels are longer this way, and they match the dump.
+  function poolOf(t) { return t.norm; }
 
   // A worker ready to take work: waiting on the task queue, or sitting in an event loop.
   // An event loop (epoll/kqueue/select) counts as ready — it does not stop the pool.
