@@ -1,0 +1,1059 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Thread Dump Inspector</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+  /* Palette, type and the flat, unrounded shapes come from the yank-run design system.
+     Single dark theme on purpose — the system commits to one world, so there is no
+     light variant to invert into. Every colour is painted explicitly. */
+  :root {
+    --bg:          #0A0E0D;
+    --panel:       #111817;
+    --panel-2:     #182220;
+
+    --ink:         #CDD5D2;
+    --ink-bright:  #DEE4E2;
+    --ink-soft:    #AEB9B5;
+    --muted:       #99A39F;
+    --dim:         #7A847F;
+    --faint:       #3F4744;
+
+    --rule:        #2A3431;
+    --rule-soft:   #1B2422;
+
+    --accent:      #3BAE8C;
+    --accent-deep: #2F9579;
+
+    /* Thread states reuse the system's status colours: error, pending, success,
+       and a neutral dim for WAITING — nothing is wrong with a parked thread. */
+    --st-blocked:  #D97566;
+    --st-timed:    #D9A566;
+    --st-runnable: #5FC2A4;
+    --st-waiting:  #7A847F;
+  }
+
+  * { box-sizing: border-box; border-radius: 0; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Ligatures off for every monospaced run: stack traces contain -> => != and must
+     read character-for-character, not as glued glyphs. */
+  code, pre, .m, td.n, th, .state, .f-level, .f-via,
+  .slot-label, .slot-name, .tile .k, .tile .v, input[type=text] {
+    font-variant-ligatures: none;
+    font-feature-settings: "liga" 0, "calt" 0;
+  }
+
+  ::selection { background: var(--accent); color: var(--bg); }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--rule); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+  .app {
+    max-width: 78rem;
+    margin: 0 auto;
+    padding: 2rem 1.25rem 5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+  }
+
+  .head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .35rem 1.25rem; }
+  .head h1 {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 1.3rem; font-weight: 700; margin: 0;
+    letter-spacing: -.01em; color: var(--ink-bright);
+  }
+  .head p { margin: 0; color: var(--dim); font-size: .85rem; }
+
+  .files { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
+  @media (max-width: 46rem) { .files { grid-template-columns: 1fr; } }
+
+  .slot {
+    background: var(--panel);
+    border: 1px dashed var(--rule);
+    padding: .85rem 1rem;
+    display: flex; align-items: center; gap: .8rem;
+    min-height: 4.25rem;
+    transition: border-color .15s, background .15s;
+  }
+  .slot.loaded { border-style: solid; }
+  .slot.over { border-color: var(--accent); background: var(--panel-2); }
+
+  .slot-label {
+    font-family: "JetBrains Mono", monospace;
+    font-size: .66rem; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--faint); flex: none;
+  }
+  .slot-body { flex: 1; min-width: 0; }
+  .slot-name {
+    font-family: "JetBrains Mono", monospace; font-size: .82rem; color: var(--ink);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .slot-meta { color: var(--dim); font-size: .78rem; }
+
+  button, .filebtn {
+    font-family: "JetBrains Mono", monospace; font-size: .78rem; font-weight: 500;
+    background: none; color: var(--ink);
+    border: 1px solid var(--rule);
+    padding: .34rem .7rem; cursor: pointer;
+    transition: color .12s, border-color .12s;
+  }
+  button:hover, .filebtn:hover { border-color: var(--accent); color: var(--accent); }
+  button:focus-visible, .filebtn:focus-visible, .tab:focus-visible, input:focus-visible {
+    outline: 1px solid var(--accent); outline-offset: 2px;
+  }
+  input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+
+  .summary { display: flex; flex-direction: column; gap: .8rem; }
+  .tiles { display: flex; flex-wrap: wrap; gap: .6rem; }
+  .tile {
+    background: var(--panel); border: 1px solid var(--rule);
+    padding: .6rem .9rem; min-width: 8rem;
+  }
+  .tile .k {
+    font-family: "JetBrains Mono", monospace;
+    font-size: .64rem; letter-spacing: .09em; text-transform: uppercase; color: var(--faint);
+  }
+  .tile .v {
+    font-family: "JetBrains Mono", monospace; font-weight: 700; color: var(--ink-bright);
+    font-size: 1.4rem; font-variant-numeric: tabular-nums; line-height: 1.25;
+  }
+
+  .statebar { display: flex; height: 10px; overflow: hidden; border: 1px solid var(--rule); }
+  .statebar div { height: 100%; }
+
+  .legend {
+    display: flex; flex-wrap: wrap; gap: .3rem 1.1rem;
+    font-family: "JetBrains Mono", monospace; font-size: .72rem; color: var(--muted);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: .38rem; }
+  .dot { width: 8px; height: 8px; flex: none; }
+
+  .tabs { display: flex; flex-wrap: wrap; gap: 0; border-bottom: 1px solid var(--rule); }
+  .tab {
+    border: none; border-bottom: 2px solid transparent;
+    padding: .5rem .8rem; color: var(--dim);
+    font-family: Inter, sans-serif; font-size: .86rem;
+  }
+  .tab:hover { color: var(--ink); border-color: var(--rule); }
+  .tab[aria-selected="true"] { color: var(--accent); border-color: var(--accent); font-weight: 500; }
+
+  .panel { background: var(--panel); border: 1px solid var(--rule); overflow: hidden; }
+  .panel-top {
+    display: flex; flex-wrap: wrap; gap: .6rem; align-items: center;
+    padding: .7rem .9rem; border-bottom: 1px solid var(--rule); background: var(--panel-2);
+  }
+  .hint { color: var(--dim); font-size: .8rem; margin: 0; }
+
+  input[type=text] {
+    font-family: "JetBrains Mono", monospace; font-size: .8rem;
+    background: var(--bg); color: var(--ink);
+    border: 1px solid var(--rule); padding: .34rem .6rem;
+    flex: 1; min-width: 12rem;
+  }
+  input[type=text]::placeholder { color: var(--faint); }
+
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: .85rem; }
+  th {
+    text-align: left; font-family: "JetBrains Mono", monospace; font-weight: 500;
+    font-size: .64rem; letter-spacing: .09em; text-transform: uppercase; color: var(--faint);
+    padding: .55rem .9rem; border-bottom: 1px solid var(--rule); white-space: nowrap;
+  }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: var(--accent); }
+  td { padding: .42rem .9rem; border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  td.n {
+    font-family: "JetBrains Mono", monospace; font-variant-numeric: tabular-nums;
+    text-align: right; white-space: nowrap; color: var(--ink-bright);
+  }
+  td.m { font-family: "JetBrains Mono", monospace; word-break: break-all; color: var(--ink-soft); }
+  tr.clickable { cursor: pointer; }
+  tr.clickable:hover td { background: var(--panel-2); }
+
+  .state {
+    font-family: "JetBrains Mono", monospace; font-size: .68rem;
+    padding: .1rem .4rem; white-space: nowrap;
+    border: 1px solid currentColor;
+    color: var(--muted);            /* default for states we have no opinion about */
+  }
+  .s-BLOCKED { color: var(--st-blocked); }
+  .s-RUNNABLE { color: var(--st-runnable); }
+  .s-WAITING { color: var(--st-waiting); }
+  .s-TIMED_WAITING { color: var(--st-timed); }
+  .s-UNKNOWN { color: var(--faint); }
+
+  .bar { height: 6px; background: var(--accent-deep); min-width: 2px; }
+  .bar-alert { background: var(--st-blocked); }
+
+  .findings { display: flex; flex-direction: column; }
+  .finding { padding: 1rem 1.1rem; border-bottom: 1px solid var(--rule-soft); border-left: 2px solid var(--rule); }
+  .finding:last-child { border-bottom: none; }
+  .f-alert { border-left-color: var(--st-blocked); }
+  .f-warn  { border-left-color: var(--st-timed); }
+  .f-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem .7rem; }
+  .f-level {
+    font-family: "JetBrains Mono", monospace; font-size: .62rem;
+    letter-spacing: .1em; text-transform: uppercase;
+  }
+  .f-alert .f-level { color: var(--st-blocked); }
+  .f-warn  .f-level { color: var(--st-timed); }
+  .f-title {
+    font-family: "JetBrains Mono", monospace; font-weight: 700;
+    font-size: .95rem; color: var(--ink-bright);
+  }
+  .f-via {
+    font-family: "JetBrains Mono", monospace; font-size: .62rem;
+    color: var(--faint); border: 1px solid var(--rule);
+    padding: .05rem .35rem; white-space: nowrap;
+  }
+  .f-text { margin: .35rem 0 .6rem; color: var(--ink-soft); font-size: .88rem; max-width: 52rem; }
+  .f-toggle { font-size: .74rem; }
+
+  .sub {
+    background: var(--bg);
+    border-left: 2px solid var(--accent-deep);
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+  }
+  .sub th { background: var(--bg); font-size: .6rem; padding: .4rem .9rem; }
+  .sub td { padding: .34rem .9rem; }
+  .sub .stack { background: var(--panel); }
+
+  .stack {
+    background: var(--bg); border-top: 1px solid var(--rule);
+    padding: .6rem .9rem; font-family: "JetBrains Mono", monospace;
+    font-size: .73rem; line-height: 1.6; color: var(--ink-soft);
+    white-space: pre; overflow-x: auto; margin: 0;
+  }
+  .stack .lock { color: var(--st-blocked); }
+
+  /* td.n also sets a colour and outranks a bare class selector — these have to be
+     at least as specific or the deltas silently render in the default ink. */
+  .delta-up, td.n.delta-up { color: var(--st-blocked); }
+  .delta-down, td.n.delta-down { color: var(--st-runnable); }
+
+  .empty { padding: 2.5rem .9rem; text-align: center; color: var(--dim); font-size: .88rem; }
+
+  footer { color: var(--faint); font-size: .78rem; }
+  footer code { font-family: "JetBrains Mono", monospace; font-size: .95em; color: var(--dim); }
+</style>
+
+<div class="app">
+
+  <header class="head">
+    <h1>Thread Dump Inspector</h1>
+    <p>Parsed in the browser. The file is never uploaded.</p>
+  </header>
+
+  <div class="files">
+    <div class="slot" id="slotA" data-slot="A">
+      <span class="slot-label">Dump&nbsp;A</span>
+      <div class="slot-body">
+        <div class="slot-name" id="nameA">drop a file here</div>
+        <div class="slot-meta" id="metaA">or pick one</div>
+      </div>
+      <label class="filebtn">Browse<input type="file" id="fileA" accept=".txt,.tdump,.dump,.log,text/plain"></label>
+    </div>
+    <div class="slot" id="slotB" data-slot="B">
+      <span class="slot-label">Dump&nbsp;B</span>
+      <div class="slot-body">
+        <div class="slot-name" id="nameB">for before/after comparison</div>
+        <div class="slot-meta" id="metaB">optional</div>
+      </div>
+      <label class="filebtn">Browse<input type="file" id="fileB" accept=".txt,.tdump,.dump,.log,text/plain"></label>
+    </div>
+  </div>
+
+  <div class="summary" id="summary" hidden>
+    <div class="tiles" id="tiles"></div>
+    <div class="statebar" id="statebar"></div>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div class="tabs" id="tabs" role="tablist" hidden></div>
+
+  <div class="panel" id="panel">
+    <div class="empty">Load a dump to start.</div>
+  </div>
+
+  <footer>
+    Supports both formats: <code>"name" - Thread t@N</code> and
+    <code>jstack</code> (<code>"name" #N ... tid=0x... nid=0x...</code>).
+  </footer>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // Preferred order for the states we know; anything else the dump contains is appended,
+  // so an unexpected value shows up instead of silently vanishing from the bar and legend.
+  var STATE_ORDER = ["BLOCKED", "RUNNABLE", "TIMED_WAITING", "WAITING", "NEW", "TERMINATED", "UNKNOWN"];
+
+  function statesPresent(d) {
+    var known = STATE_ORDER.filter(function (s) { return d.byState[s]; });
+    var extra = Object.keys(d.byState).filter(function (s) { return STATE_ORDER.indexOf(s) < 0; }).sort();
+    return known.concat(extra);
+  }
+  var dumps = { A: null, B: null };
+  var view = "findings";
+  var sortDesc = true;
+  var searchQuery = "";
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function nThreads(n) { return n + (n === 1 ? " thread" : " threads"); }
+
+  // ------------------------------------------------------------------ parsing
+
+  var RE_HEAD_A = /^"(.*)"\s+-\s+Thread\s+t@(\d+)/;
+  var RE_HEAD_B = /^"(.*)"\s+(?:#(\d+)\s+)?(?:daemon\s+)?(?:prio=|os_prio=|tid=|nid=|cpu=)/;
+  var RE_STATE  = /java\.lang\.Thread\.State:\s*([A-Z_]+)/;
+  var RE_FRAME  = /^\s+at\s+(.+)$/;
+  var RE_OWNED  = /owned by\s+"(.*?)"\s+(?:t@|#)?(\d+)/;
+
+  // Two ways a thread can wait for a lock, and two ways to own one.
+  // Monitors (synchronized) name the owner inline; j.u.c locks do not — their owner is only
+  // discoverable through the "Locked ownable synchronizers" section of another thread.
+  var RE_WAIT_LOCK = /waiting to lock\s+<([0-9a-fx]+)>/i;
+  var RE_PARK_FOR  = /parking to wait for\s+<([0-9a-fx]+)>/i;
+  var RE_LOCKED    = /^-\s+locked\s+<([0-9a-fx]+)>/i;
+  var RE_OWNS_SYNC = /^-\s+<([0-9a-fx]+)>\s+\(a\s/i;
+  var RE_SYNC_HEAD = /Locked ownable synchronizers:/i;
+  var RE_DEADLOCK  = /Found (?:one|\d+) Java-level deadlock/i;
+  var RE_DL_END    = /Java stack information for the threads listed above/i;
+
+  function parse(text) {
+    var lines = text.split(/\r?\n/);
+    var threads = [];
+    var cur = null;
+    var inSync = false;
+
+    function push() { if (cur) { threads.push(cur); cur = null; } }
+
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+
+      if (line.charAt(0) === '"') {
+        var m = RE_HEAD_A.exec(line);
+        var id = null;
+        var name;
+        if (m) {
+          name = m[1];
+          id = parseInt(m[2], 10);
+        } else {
+          m = RE_HEAD_B.exec(line);
+          if (!m) continue;
+          name = m[1];
+          id = m[2] ? parseInt(m[2], 10) : null;
+        }
+        push();
+        cur = {
+          name: name, id: id, state: "UNKNOWN", frames: [], locks: [],
+          waitsFor: null, waitingOn: null, locksHeld: [], raw: [line]
+        };
+        inSync = false;
+        continue;
+      }
+
+      if (!cur) continue;
+      cur.raw.push(line);
+
+      var st = RE_STATE.exec(line);
+      if (st) { cur.state = st[1]; continue; }
+
+      var fr = RE_FRAME.exec(line);
+      if (fr) { cur.frames.push(fr[1]); continue; }
+
+      if (RE_SYNC_HEAD.test(line)) { inSync = true; continue; }
+
+      var t = line.trim();
+      if (t.charAt(0) === "-" && t.length > 1) {
+        cur.locks.push(t);
+
+        var w = RE_WAIT_LOCK.exec(t) || RE_PARK_FOR.exec(t);
+        if (w) cur.waitingOn = w[1];
+
+        var held = RE_LOCKED.exec(t);
+        if (held) cur.locksHeld.push(held[1]);
+        if (inSync) {
+          var own = RE_OWNS_SYNC.exec(t);
+          if (own) cur.locksHeld.push(own[1]);
+        }
+
+        var ow = RE_OWNED.exec(t);
+        if (ow && w) cur.waitsFor = { name: ow[1], id: parseInt(ow[2], 10), lock: w[1] };
+      }
+    }
+    push();
+
+    threads.forEach(function (th) {
+      th.norm = th.name.replace(/\d+/g, "N");
+      th.top = th.frames.length ? th.frames[0] : "(no stack)";
+    });
+
+    // Resolve lock owners the dump did not name inline. Covers ReentrantLock and any other
+    // AbstractOwnableSynchronizer, plus monitors on dumps that print "locked" but not "owned by".
+    var owner = Object.create(null);
+    threads.forEach(function (th) {
+      th.locksHeld.forEach(function (id) { if (!owner[id]) owner[id] = th; });
+    });
+    threads.forEach(function (th) {
+      if (th.waitsFor || !th.waitingOn) return;
+      var o = owner[th.waitingOn];
+      if (o && o !== th) th.waitsFor = { name: o.name, id: o.id, lock: th.waitingOn };
+    });
+
+    return {
+      threads: threads,
+      byState: countBy(threads, function (t) { return t.state; }),
+      deadlock: extractDeadlock(lines)
+    };
+  }
+
+  // The JVM prints its own deadlock report above the thread list. Keep it verbatim:
+  // re-deriving it from the wait graph is redundant and less reliable.
+  function extractDeadlock(lines) {
+    var start = -1;
+    for (var i = 0; i < lines.length; i++) {
+      if (RE_DEADLOCK.test(lines[i])) { start = i; break; }
+    }
+    if (start < 0) return null;
+    var block = [];
+    for (var j = start; j < lines.length && block.length < 200; j++) {
+      if (j > start && RE_DL_END.test(lines[j])) break;
+      block.push(lines[j]);
+    }
+    return block.join("\n").replace(/\s+$/, "");
+  }
+
+  function countBy(arr, fn) {
+    var m = Object.create(null);
+    arr.forEach(function (x) { var k = fn(x); m[k] = (m[k] || 0) + 1; });
+    return m;
+  }
+
+  function groupBy(arr, fn) {
+    var m = Object.create(null);
+    arr.forEach(function (x) { var k = fn(x); (m[k] || (m[k] = [])).push(x); });
+    return m;
+  }
+
+  function sortedGroups(map) {
+    return Object.keys(map)
+      .map(function (k) { return { key: k, items: map[k] }; })
+      .sort(function (a, b) { return b.items.length - a.items.length || a.key.localeCompare(b.key); });
+  }
+
+  // ------------------------------------------------------------- pools & hints
+
+  // Pool name: drop the trailing worker index and the word "thread".
+  // spark-job-thread-N -> spark-job, pool-N-thread-N -> pool-N, LauncherServer-N -> LauncherServer
+  function poolOf(t) {
+    return t.norm.replace(/[-_. #]*N$/, "").replace(/[-_.]?thread$/i, "") || t.norm;
+  }
+
+  // A worker ready to take work: waiting on the task queue, or sitting in an event loop.
+  // An event loop (epoll/kqueue/select) counts as ready — it does not stop the pool.
+  var RE_IDLE = /ThreadPoolExecutor\.getTask|ForkJoinPool\.awaitWork|ForkJoinPool\.scan|DelayedWorkQueue\.take|epollWait|EPollArrayWrapper\.poll|KQueueArrayWrapper|SelectorImpl\.(?:select|doSelect)|SingleThreadEventExecutor/;
+  function isIdleWorker(t) { return RE_IDLE.test(t.frames.join("\n")); }
+
+  // A real pool is recognised by the executor frame in the stack, not by the name:
+  // otherwise any group with a number in its name becomes a "pool" (DataStreamer, Thread-N).
+  var RE_WORKER = /ThreadPoolExecutor\.runWorker|ForkJoinWorkerThread\.run|ScheduledThreadPoolExecutor|SingleThreadEventExecutor/;
+  function looksLikePool(items) {
+    return items.some(function (t) { return RE_WORKER.test(t.frames.join("\n")); });
+  }
+
+  // RUNNABLE inside a native call is idle, not load. Shown as a tile and in the States
+  // hint — not as a finding, since every JVM has such threads and it would fire always.
+  var RE_NATIVE_IDLE = /Native Method|socketRead0|epollWait|poll0|accept0/;
+  function isNativeIdle(t) {
+    return t.state === "RUNNABLE" && RE_NATIVE_IDLE.test(t.frames.join("\n"));
+  }
+
+  function pools(d) {
+    var g = groupBy(d.threads, poolOf);
+    return Object.keys(g).map(function (k) {
+      var items = g[k];
+      var busy = items.filter(function (t) { return !isIdleWorker(t); });
+      return { name: k, items: items, busy: busy, ratio: busy.length / items.length };
+    }).filter(function (p) { return p.items.length > 1 && looksLikePool(p.items); })
+      .sort(function (a, b) { return b.busy.length - a.busy.length || b.items.length - a.items.length; });
+  }
+
+  function viewPools(d) {
+    var ps = pools(d);
+    if (!ps.length) return '<div class="empty">No pool-like groups found.</div>';
+
+    var body = ps.map(function (p, i) {
+      var topBusy = p.busy.length ? sortedGroups(groupBy(p.busy, function (t) { return t.top; }))[0] : null;
+      var warn = p.ratio === 1 && p.items.length >= 3;
+      return '<tr class="clickable" data-group="' + i + '">' +
+        '<td class="m">' + esc(p.name) + "</td>" +
+        '<td class="n">' + p.items.length + "</td>" +
+        '<td class="n' + (warn ? " delta-up" : "") + '">' + p.busy.length + "</td>" +
+        '<td style="width:8rem"><div class="bar' + (warn ? " bar-alert" : "") +
+          '" style="width:' + Math.max(p.ratio * 100, 2) + '%"></div></td>' +
+        '<td class="m">' + (topBusy ? esc(topBusy.key) + (topBusy.items.length > 1 ? " ×" + topBusy.items.length : "") : "—") + "</td></tr>" +
+        '<tr hidden data-groupbody="' + i + '"><td colspan="5" style="padding:0">' +
+        subTable(p.items, 100) + "</td></tr>";
+    }).join("");
+
+    return tableWrap(
+      "<th>Pool</th><th>Threads</th><th>Busy</th><th></th><th>What they do</th>",
+      body,
+      "Busy = not waiting for a task. A fully busy pool means everything that uses it is queued."
+    );
+  }
+
+  // ------------------------------------------------------------------ findings
+
+  // Library signatures. Unlike the generic checks below these are stack-specific and stay
+  // silent when the frames are absent. Extend the list for your own stack: match() gets a
+  // thread, title() gets the hit count.
+  var SIGNATURES = [
+    {
+      via: "HDFS",
+      match: function (t) {
+        return /DFSOutputStream\$DataStreamer\.run/.test(t.frames.join("\n")) &&
+               !/^DataStreamer for file/.test(t.name);
+      },
+      title: function (n) { return nThreads(n) + " opened an HDFS write stream and wrote nothing"; },
+      text: "Hadoop renames a DataStreamer once it allocates a block, so an unnamed one means the " +
+            "output stream was created, no data was written and close() was never called. It will " +
+            "not exit before the process does. Look for an error path that leaves the resource open. " +
+            "Note the blind spot: a stream abandoned after writing keeps its file name and is not " +
+            "counted here — from a single dump it is indistinguishable from one still writing. " +
+            "Compare two dumps to tell them apart."
+    },
+    {
+      via: "HikariCP",
+      match: function (t) { return /HikariPool\.getConnection|ConnectionPool\.borrow/.test(t.frames.join("\n")); },
+      title: function (n) { return nThreads(n) + " waiting for a DB connection"; },
+      text: "The connection pool is exhausted: either too small for the load, or connections are " +
+            "held longer than needed. Check what the threads that already hold one are doing."
+    }
+  ];
+
+  function findings(d) {
+    var out = [];
+    var all = d.threads;
+
+    // Thresholds scale with the dump: absolute numbers tuned on one service either stay
+    // silent on a small process or flood on a large one. Floors keep tiny dumps sane.
+    var total = all.length;
+    var manyThreads   = Math.max(5, Math.ceil(total * 0.05));  // pile-up in one frame
+    var sharedThreads = Math.max(5, Math.ceil(total * 0.03));  // one call across pools
+    var MIN_POOL      = 3;                                     // smaller pools are noise
+    var MIN_WAITERS   = 3;                                     // lock contention
+
+    // The JVM already found it — report verbatim, it outranks anything we infer.
+    if (d.deadlock) {
+      out.push({
+        level: "alert",
+        title: "The JVM reported a deadlock",
+        text: "Taken from the dump as-is. Threads in a deadlock never recover; the process needs " +
+              "a restart once you have the report.",
+        pre: d.deadlock
+      });
+    }
+
+    // 1. Pool fully busy
+    pools(d).forEach(function (p) {
+      if (p.ratio < 1 || p.items.length < MIN_POOL) return;
+      var dominant = sortedGroups(groupBy(p.busy, function (t) { return t.top; }))[0];
+      if (dominant.items.length / p.busy.length < 0.6) return;
+      out.push({
+        level: "alert",
+        title: "Pool " + p.name + " is fully busy",
+        text: "All " + nThreads(p.items.length) + " busy, " + dominant.items.length +
+              " of them in the same frame: " + dominant.key + ". Everything that uses this pool is " +
+              "queued. If this is a blocking call to an external system, move it to its own pool.",
+        items: p.busy
+      });
+    });
+
+    // 2. Lock contention
+    var waiters = all.filter(function (t) { return t.waitsFor; });
+    sortedGroups(groupBy(waiters, function (t) { return t.waitsFor.name + " t@" + t.waitsFor.id; })).forEach(function (g) {
+      if (g.items.length < MIN_WAITERS) return;
+      var owner = all.filter(function (t) { return t.id === g.items[0].waitsFor.id; })[0];
+      out.push({
+        level: "alert",
+        title: nThreads(g.items.length) + " waiting on one lock",
+        text: "Holder: " + g.key + (owner ? ", currently in " + owner.top : " (not present in this dump)") +
+              ". The bottleneck is the holder, not the waiters.",
+        items: g.items
+      });
+    });
+
+    // BLOCKED threads whose owner the dump never named fall out of the check above and would
+    // otherwise surface nowhere but the summary tile.
+    var orphanBlocked = all.filter(function (t) { return t.state === "BLOCKED" && !t.waitsFor; });
+    if (orphanBlocked.length >= MIN_WAITERS) {
+      out.push({
+        level: "alert",
+        title: nThreads(orphanBlocked.length) + " BLOCKED, owner not named in the dump",
+        text: "The waiters cannot be attributed to a holder: the dump gives neither an inline owner " +
+              "nor a Locked ownable synchronizers section to resolve one. Re-take it with jstack -l, " +
+              "or look for what these threads have in common in the frames below.",
+        items: orphanBlocked
+      });
+    }
+
+    // 3. Identical stacks outside pools
+    sortedGroups(groupBy(all.filter(function (t) { return !isIdleWorker(t); }), function (t) { return t.top; }))
+      .forEach(function (g) {
+        if (g.items.length < manyThreads) return;
+        var poolNames = Object.keys(groupBy(g.items, poolOf));
+        out.push({
+          level: "warn",
+          title: nThreads(g.items.length) + " in the same frame",
+          text: g.key + ". Groups affected: " + poolNames.slice(0, 4).join(", ") +
+                (poolNames.length > 4 ? " and " + (poolNames.length - 4) + " more" : "") +
+                ". This many identical stacks usually means work is piling up.",
+          items: g.items
+        });
+      });
+
+    // 4. One external call pulls in several pools.
+    // A shared stack matches at every level, so candidates are clustered by how much their
+    // thread sets overlap; the deepest frame survives — where the wait actually happens.
+    var byFrame = Object.create(null);
+    all.forEach(function (t) {
+      var seen = Object.create(null);
+      t.frames.forEach(function (f, depth) {
+        var key = f.replace(/\(.*/, "");
+        if (seen[key]) return;
+        seen[key] = 1;
+        (byFrame[key] || (byFrame[key] = [])).push({ t: t, depth: depth });
+      });
+    });
+
+    var cands = [];
+    Object.keys(byFrame).forEach(function (f) {
+      if (/^(java|scala|sun|jdk)\./.test(f)) return;
+      var hits = byFrame[f].filter(function (h) { return !isIdleWorker(h.t); });
+      if (hits.length < sharedThreads) return;
+      var items = hits.map(function (h) { return h.t; });
+      if (Object.keys(groupBy(items, poolOf)).length < 3) return;
+      cands.push({
+        frame: f,
+        items: items,
+        ids: items.map(function (t) { return t.id; }),
+        depth: hits.reduce(function (a, h) { return a + h.depth; }, 0) / hits.length
+      });
+    });
+
+    function overlap(a, b) {
+      var set = Object.create(null);
+      a.ids.forEach(function (id) { set[id] = 1; });
+      return b.ids.filter(function (id) { return set[id]; }).length / Math.min(a.ids.length, b.ids.length);
+    }
+
+    var kept = [];
+    cands.sort(function (a, b) { return a.depth - b.depth; }).forEach(function (c) {
+      if (kept.length >= 3) return;
+      if (!kept.some(function (k) { return overlap(k, c) > 0.8; })) kept.push(c);
+    });
+
+    kept.sort(function (a, b) { return b.items.length - a.items.length; }).forEach(function (c) {
+      var ps = Object.keys(groupBy(c.items, poolOf));
+      out.push({
+        level: "warn",
+        title: "Shared point across " + ps.length + " thread groups",
+        text: nThreads(c.items.length) + " " + (c.items.length === 1 ? "passes" : "pass") +
+              " through " + c.frame + ". A shared resource on the path of several pools is a " +
+              "bottleneck candidate.",
+        items: c.items
+      });
+    });
+
+    // 5. Library signatures, see SIGNATURES above
+    SIGNATURES.forEach(function (sig) {
+      var items = all.filter(sig.match);
+      if (!items.length) return;
+      out.push({ level: "warn", via: sig.via, title: sig.title(items.length), text: sig.text, items: items });
+    });
+
+    var rank = { alert: 0, warn: 1 };
+    return out.sort(function (a, b) { return rank[a.level] - rank[b.level] || (b.items ? b.items.length : 0) - (a.items ? a.items.length : 0); });
+  }
+
+  function viewFindings(d) {
+    var fs = findings(d);
+    if (!fs.length) {
+      return '<div class="empty">No known problem patterns found. ' +
+             "Not a guarantee — check Pools and Population yourself.</div>";
+    }
+    var LV = { alert: "Action", warn: "Check" };
+    return '<div class="panel-top"><p class="hint">Unlabelled checks are generic. Checks marked ' +
+      "with a signature match frames of a specific library and stay silent on unrelated dumps; " +
+      "the signature list in the source is meant to be extended.</p></div>" +
+      '<div class="findings">' + fs.map(function (f, i) {
+        return '<div class="finding f-' + f.level + '">' +
+          '<div class="f-head"><span class="f-level">' + LV[f.level] + "</span>" +
+          '<span class="f-title">' + esc(f.title) + "</span>" +
+          (f.via ? '<span class="f-via">signature: ' + esc(f.via) + "</span>" : "") + "</div>" +
+          '<p class="f-text">' + esc(f.text) + "</p>" +
+          (f.pre
+            ? '<pre class="stack">' + esc(f.pre) + "</pre>"
+            : '<div class="f-more"><button class="f-toggle" data-f="' + i + '">Show threads (' +
+              f.items.length + ")</button></div>" +
+              '<div hidden data-fbody="' + i + '">' + subTable(f.items, 80) + "</div>") +
+          "</div>";
+      }).join("") + "</div>";
+  }
+
+  // ------------------------------------------------------------------ summary
+
+  function stateColor(s) {
+    return { BLOCKED: "--st-blocked", RUNNABLE: "--st-runnable", WAITING: "--st-waiting", TIMED_WAITING: "--st-timed" }[s] || "--muted";
+  }
+
+  function renderSummary() {
+    var d = dumps.A;
+    var box = document.getElementById("summary");
+    if (!d) { box.hidden = true; return; }
+    box.hidden = false;
+
+    var total = d.threads.length;
+    var tiles = [
+      { k: "threads", v: total },
+      { k: "blocked", v: d.byState.BLOCKED || 0 },
+      { k: "runnable but idle", v: d.threads.filter(isNativeIdle).length },
+      { k: "name groups", v: Object.keys(groupBy(d.threads, function (t) { return t.norm; })).length }
+    ];
+    if (dumps.B) tiles.push({ k: "dump B", v: dumps.B.threads.length });
+
+    document.getElementById("tiles").innerHTML = tiles.map(function (t) {
+      return '<div class="tile"><div class="k">' + esc(t.k) + '</div><div class="v">' + t.v + "</div></div>";
+    }).join("");
+
+    var present = statesPresent(d);
+
+    document.getElementById("statebar").innerHTML = present.map(function (s) {
+      var n = d.byState[s] || 0;
+      if (!n) return "";
+      return '<div style="width:' + (n / total * 100) + "%;background:var(" + stateColor(s) + ')" title="' + s + ": " + n + '"></div>';
+    }).join("");
+
+    document.getElementById("legend").innerHTML = present.map(function (s) {
+      return '<span><i class="dot" style="background:var(' + stateColor(s) + ')"></i>' + s + " — " + d.byState[s] + "</span>";
+    }).join("");
+  }
+
+  // ------------------------------------------------------------------ views
+
+  var TABS = [
+    { id: "findings",   label: "Findings" },
+    { id: "pools",      label: "Pools" },
+    { id: "population", label: "Population" },
+    { id: "topframe",   label: "Top frame" },
+    { id: "states",     label: "States" },
+    { id: "order",      label: "Creation order" },
+    { id: "locks",      label: "Locks" },
+    { id: "search",     label: "Stack search" },
+    { id: "diff",       label: "Compare" }
+  ];
+
+  function renderTabs() {
+    var el = document.getElementById("tabs");
+    el.hidden = !dumps.A;
+    el.innerHTML = TABS.map(function (t) {
+      return '<button class="tab" role="tab" data-view="' + t.id + '" aria-selected="' + (t.id === view) + '">' + t.label + "</button>";
+    }).join("");
+  }
+
+  function stateChip(s) { return '<span class="state s-' + s + '">' + s + "</span>"; }
+
+  function threadRows(items, limit) {
+    var shown = items.slice(0, limit || 400);
+    var html = shown.map(function (t, i) {
+      return '<tr class="clickable" data-stack="' + i + '">' +
+        '<td class="n">' + (t.id === null ? "—" : t.id) + "</td>" +
+        '<td class="m">' + esc(t.name) + "</td>" +
+        "<td>" + stateChip(t.state) + "</td>" +
+        '<td class="m">' + esc(t.top) + "</td></tr>" +
+        '<tr hidden data-body="' + i + '"><td colspan="4" style="padding:0"><pre class="stack">' + stackHtml(t) + "</pre></td></tr>";
+    }).join("");
+    if (items.length > shown.length) {
+      html += '<tr><td colspan="4" class="hint" style="padding:.6rem .9rem">Showing ' + shown.length + " of " + items.length + ".</td></tr>";
+    }
+    return html;
+  }
+
+  // Expanded thread list: its own header and border, so it does not read as a continuation
+  // of the table it sits inside.
+  function subTable(items, limit) {
+    return '<div class="sub"><div class="scroll"><table>' +
+      "<thead><tr><th>t@</th><th>Thread name</th><th>State</th><th>Top frame</th></tr></thead>" +
+      "<tbody>" + threadRows(items, limit) + "</tbody></table></div></div>";
+  }
+
+  function stackHtml(t) {
+    return t.raw.map(function (l) {
+      var e = esc(l);
+      return /^\s*-\s/.test(l) ? '<span class="lock">' + e + "</span>" : e;
+    }).join("\n");
+  }
+
+  function tableWrap(head, body, note) {
+    return (note ? '<div class="panel-top"><p class="hint">' + note + "</p></div>" : "") +
+      '<div class="scroll"><table><thead><tr>' + head + "</tr></thead><tbody>" + body + "</tbody></table></div>";
+  }
+
+  function statesOf(items) {
+    var c = countBy(items, function (t) { return t.state; });
+    return Object.keys(c).sort().map(function (s) {
+      return '<span class="state s-' + s + '">' + s + " " + c[s] + "</span>";
+    }).join(" ");
+  }
+
+  function viewPopulation(d) {
+    var groups = sortedGroups(groupBy(d.threads, function (t) { return t.norm; }));
+    if (!sortDesc) groups.reverse();
+    var max = groups.length ? Math.max.apply(null, groups.map(function (g) { return g.items.length; })) : 1;
+
+    var body = groups.map(function (g, i) {
+      return '<tr class="clickable" data-group="' + i + '">' +
+        '<td class="n">' + g.items.length + "</td>" +
+        '<td style="width:7rem"><div class="bar" style="width:' + (g.items.length / max * 100) + '%"></div></td>' +
+        '<td class="m">' + esc(g.key) + "</td>" +
+        "<td>" + statesOf(g.items) + "</td></tr>" +
+        '<tr hidden data-groupbody="' + i + '"><td colspan="4" style="padding:0">' +
+        subTable(g.items, 60) + "</td></tr>";
+    }).join("");
+
+    return tableWrap(
+      '<th class="sortable">Count</th><th></th><th>Name (digits → N)</th><th>States</th>',
+      body,
+      "An outsized group is usually the anomaly. Rows expand."
+    );
+  }
+
+  function viewTopFrame(d) {
+    var groups = sortedGroups(groupBy(d.threads, function (t) { return t.top; }));
+    var body = groups.map(function (g, i) {
+      return '<tr class="clickable" data-group="' + i + '">' +
+        '<td class="n">' + g.items.length + "</td>" +
+        '<td class="m">' + esc(g.key) + "</td>" +
+        "<td>" + statesOf(g.items) + "</td></tr>" +
+        '<tr hidden data-groupbody="' + i + '"><td colspan="3" style="padding:0">' +
+        subTable(g.items, 60) + "</td></tr>";
+    }).join("");
+    return tableWrap("<th>Count</th><th>Top frame</th><th>States</th>", body,
+      "Where threads are standing right now.");
+  }
+
+  function viewStates(d) {
+    var groups = sortedGroups(groupBy(d.threads, function (t) { return t.state; }));
+    var body = groups.map(function (g, i) {
+      return '<tr class="clickable" data-group="' + i + '">' +
+        '<td class="n">' + g.items.length + "</td>" +
+        "<td>" + stateChip(g.key) + "</td>" +
+        '<td class="m">' + esc(sortedGroups(groupBy(g.items, function (t) { return t.norm; }))[0].key) + " …</td></tr>" +
+        '<tr hidden data-groupbody="' + i + '"><td colspan="3" style="padding:0">' +
+        subTable(g.items, 200) + "</td></tr>";
+    }).join("");
+    return tableWrap("<th>Count</th><th>State</th><th>Most common group</th>", body,
+      "RUNNABLE with a native frame (socketRead0, epollWait) means idle, not load.");
+  }
+
+  function viewOrder(d) {
+    var withId = d.threads.filter(function (t) { return t.id !== null; })
+      .sort(function (a, b) { return a.id - b.id; });
+    if (!withId.length) return '<div class="empty">This dump has no thread ids.</div>';
+    return tableWrap("<th>t@</th><th>Name</th><th>State</th><th>Top frame</th>",
+      threadRows(withId, 2000),
+      "Lower id = created earlier. Adjacent ids were created together, which dates a leak.");
+  }
+
+  function viewLocks(d) {
+    var waiters = d.threads.filter(function (t) { return t.waitsFor; });
+    if (!waiters.length) return '<div class="empty">No lock contention in this dump.</div>';
+
+    var groups = sortedGroups(groupBy(waiters, function (t) { return t.waitsFor.name + " t@" + t.waitsFor.id; }));
+
+    var body = groups.map(function (g, i) {
+      var owner = d.threads.filter(function (t) { return t.id === g.items[0].waitsFor.id; })[0];
+      return '<tr class="clickable" data-group="' + i + '">' +
+        '<td class="n">' + g.items.length + "</td>" +
+        '<td class="m">' + esc(g.key) + "</td>" +
+        '<td class="m">' + esc(owner ? owner.top : "holder not in this dump") + "</td></tr>" +
+        '<tr hidden data-groupbody="' + i + '"><td colspan="3" style="padding:0">' +
+        subTable(g.items, 60) + "</td></tr>";
+    }).join("");
+
+    return tableWrap("<th>Waiting</th><th>Lock holder</th><th>Holder is in</th>", body,
+      "Covers both monitors and j.u.c locks; for the latter the owner is resolved through the " +
+      "Locked ownable synchronizers section. Check the holder first — that is the bottleneck.");
+  }
+
+  function viewSearch() {
+    return '<div class="panel-top">' +
+      '<input type="text" id="q" placeholder="regex over stacks, e.g. getApplications|DataStreamer" value="' + esc(searchQuery) + '">' +
+      '<span class="hint" id="qcount"></span></div><div id="qres"></div>';
+  }
+
+  function runSearch() {
+    var d = dumps.A;
+    var out = document.getElementById("qres");
+    var cnt = document.getElementById("qcount");
+    if (!out) return;
+    if (!searchQuery) { out.innerHTML = '<div class="empty">Enter a pattern.</div>'; cnt.textContent = ""; return; }
+    var re;
+    try { re = new RegExp(searchQuery, "i"); }
+    catch (e) { out.innerHTML = '<div class="empty">Invalid pattern: ' + esc(e.message) + "</div>"; return; }
+
+    var hits = d.threads.filter(function (t) { return re.test(t.raw.join("\n")); });
+    cnt.textContent = "matches: " + hits.length;
+    out.innerHTML = hits.length
+      ? '<div class="scroll"><table><thead><tr><th>t@</th><th>Name</th><th>State</th><th>Top frame</th></tr></thead><tbody>' +
+        threadRows(hits, 300) + "</tbody></table></div>"
+      : '<div class="empty">No matches.</div>';
+  }
+
+  function viewDiff() {
+    if (!dumps.B) return '<div class="empty">Load a second dump to compare.</div>';
+    var a = countBy(dumps.A.threads, function (t) { return t.norm; });
+    var b = countBy(dumps.B.threads, function (t) { return t.norm; });
+    var keys = Object.keys(a).concat(Object.keys(b)).filter(function (v, i, s) { return s.indexOf(v) === i; });
+
+    var rows = keys.map(function (k) {
+      return { key: k, a: a[k] || 0, b: b[k] || 0, d: (b[k] || 0) - (a[k] || 0) };
+    }).sort(function (x, y) { return Math.abs(y.d) - Math.abs(x.d) || y.a - x.a; });
+
+    var body = rows.map(function (r) {
+      var cls = r.d > 0 ? "delta-up" : r.d < 0 ? "delta-down" : "";
+      var sign = r.d > 0 ? "+" : "";
+      return '<tr><td class="n">' + r.a + '</td><td class="n">' + r.b + "</td>" +
+        '<td class="n ' + cls + '">' + (r.d ? sign + r.d : "·") + "</td>" +
+        '<td class="m">' + esc(r.key) + "</td></tr>";
+    }).join("");
+
+    return tableWrap("<th>A</th><th>B</th><th>Δ</th><th>Thread group</th>", body,
+      "Red grew in B, green went away. This is how you confirm a fix landed.");
+  }
+
+  // ------------------------------------------------------------------ render
+
+  function render() {
+    var panel = document.getElementById("panel");
+    if (!dumps.A) { panel.innerHTML = '<div class="empty">Load a dump to start.</div>'; return; }
+    var d = dumps.A;
+    var html;
+    switch (view) {
+      case "findings":   html = viewFindings(d); break;
+      case "pools":      html = viewPools(d); break;
+      case "population": html = viewPopulation(d); break;
+      case "topframe":   html = viewTopFrame(d); break;
+      case "states":     html = viewStates(d); break;
+      case "order":      html = viewOrder(d); break;
+      case "locks":      html = viewLocks(d); break;
+      case "search":     html = viewSearch(); break;
+      case "diff":       html = viewDiff(); break;
+    }
+    panel.innerHTML = html;
+    if (view === "search") runSearch();
+  }
+
+  // ------------------------------------------------------------------ events
+
+  document.getElementById("tabs").addEventListener("click", function (e) {
+    var b = e.target.closest("[data-view]");
+    if (!b) return;
+    view = b.dataset.view;
+    renderTabs();
+    render();
+  });
+
+  document.getElementById("panel").addEventListener("click", function (e) {
+    if (e.target.closest("#q")) return;
+
+    var th = e.target.closest("th.sortable");
+    if (th) { sortDesc = !sortDesc; render(); return; }
+
+    var ft = e.target.closest("[data-f]");
+    if (ft) {
+      var fb = document.querySelector('[data-fbody="' + ft.dataset.f + '"]');
+      if (fb) {
+        fb.hidden = !fb.hidden;
+        ft.textContent = (fb.hidden ? "Show" : "Hide") + ft.textContent.slice(ft.textContent.indexOf(" threads"));
+      }
+      return;
+    }
+
+    var row = e.target.closest("tr[data-group], tr[data-stack]");
+    if (!row) return;
+    var key = row.dataset.group !== undefined ? "groupbody" : "body";
+    var idx = row.dataset.group !== undefined ? row.dataset.group : row.dataset.stack;
+    var body = row.parentNode.querySelector('tr[data-' + key + '="' + idx + '"]');
+    if (body) body.hidden = !body.hidden;
+  });
+
+  document.getElementById("panel").addEventListener("input", function (e) {
+    if (e.target.id !== "q") return;
+    searchQuery = e.target.value;
+    runSearch();
+  });
+
+  function load(slot, file) {
+    var nameEl = document.getElementById("name" + slot);
+    var metaEl = document.getElementById("meta" + slot);
+    nameEl.textContent = file.name;
+    metaEl.textContent = "parsing…";
+
+    file.text().then(function (text) {
+      var t0 = performance.now();
+      var parsed = parse(text);
+      var ms = Math.round(performance.now() - t0);
+      dumps[slot] = parsed;
+      metaEl.textContent = parsed.threads.length + " threads · " +
+        (text.length / 1048576).toFixed(1) + " MB · " + ms + " ms";
+      document.getElementById("slot" + slot).classList.add("loaded");
+      if (slot === "B") view = "diff";
+      renderSummary(); renderTabs(); render();
+    });
+  }
+
+  ["A", "B"].forEach(function (slot) {
+    document.getElementById("file" + slot).addEventListener("change", function (e) {
+      if (e.target.files[0]) load(slot, e.target.files[0]);
+    });
+    var el = document.getElementById("slot" + slot);
+    el.addEventListener("dragover", function (e) { e.preventDefault(); el.classList.add("over"); });
+    el.addEventListener("dragleave", function () { el.classList.remove("over"); });
+    el.addEventListener("drop", function (e) {
+      e.preventDefault(); el.classList.remove("over");
+      if (e.dataTransfer.files[0]) load(slot, e.dataTransfer.files[0]);
+    });
+  });
+
+  window.addEventListener("dragover", function (e) { e.preventDefault(); });
+  window.addEventListener("drop", function (e) { e.preventDefault(); });
+})();
+</script>
