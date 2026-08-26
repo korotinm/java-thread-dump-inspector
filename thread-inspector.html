@@ -326,6 +326,15 @@
 
   function nThreads(n) { return n + (n === 1 ? " thread" : " threads"); }
 
+  // Byte count from File.size, not text.length — the latter counts UTF-16 units, which
+  // drifts from the real file size once thread names carry non-ASCII. The unit follows the
+  // value so a 30 KB dump does not read as "0.0 MB".
+  function fileSize(bytes) {
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1048576) return Math.round(bytes / 1024) + " KB";
+    return (bytes / 1048576).toFixed(1) + " MB";
+  }
+
   // Collapses a digit run to "N" only if it borders a non-alphanumeric character (or the
   // start/end of the string) on at least one side. That is what separates a worker index —
   // "-thread-19", "LauncherServer-121", the octets in "10.233.10.1" — from a digit that is
@@ -494,7 +503,23 @@
   // A worker ready to take work: waiting on the task queue, or sitting in an event loop.
   // An event loop (epoll/kqueue/select) counts as ready — it does not stop the pool.
   var RE_IDLE = /ThreadPoolExecutor\.getTask|ForkJoinPool\.awaitWork|ForkJoinPool\.scan|DelayedWorkQueue\.take|epollWait|EPollArrayWrapper\.poll|KQueueArrayWrapper|SelectorImpl\.(?:select|doSelect)|SingleThreadEventExecutor/;
-  function isIdleWorker(t) { return RE_IDLE.test(t.frames.join("\n")); }
+
+  // A blocking socket read looks identical whether the thread waits for the next incoming
+  // request or for the answer to one it sent. What separates them is the rest of the stack:
+  // an RMI/JMX connection handler is JDK frames all the way down, while a client waiting on
+  // a response has the calling code in it. A JDK-only stack blocked in a native call is
+  // infrastructure parked between requests — not application work, so not busy.
+  var RE_JDK = /^(?:java|javax|sun|jdk|com\.sun)\./;
+  var RE_BLOCKED_NATIVE = /Native Method|socketRead0|epollWait|accept0|poll0/;
+  function isInfraIdle(t) {
+    return t.frames.length > 0 &&
+      RE_BLOCKED_NATIVE.test(t.top) &&
+      t.frames.every(function (f) { return RE_JDK.test(f); });
+  }
+
+  function isIdleWorker(t) {
+    return RE_IDLE.test(t.frames.join("\n")) || isInfraIdle(t);
+  }
 
   // A real pool is recognised by the executor frame in the stack, not by the name:
   // otherwise any group with a number in its name becomes a "pool" (DataStreamer, Thread-N).
@@ -606,8 +631,9 @@
         level: "alert",
         title: "Pool " + p.name + " is fully busy",
         text: "All " + nThreads(p.items.length) + " busy, " + dominant.items.length +
-              " of them in the same frame: " + dominant.key + ". Everything that uses this pool is " +
-              "queued. If this is a blocking call to an external system, move it to its own pool.",
+              " of them in the same frame: " + dominant.key + ". Anything queued for this pool waits " +
+              "until a thread frees up. If the pool is shared with other work, that blocking call " +
+              "belongs on a pool of its own.",
         items: p.busy
       });
     });
@@ -1049,7 +1075,7 @@
       var ms = Math.round(performance.now() - t0);
       dumps[slot] = parsed;
       metaEl.textContent = parsed.threads.length + " threads · " +
-        (text.length / 1048576).toFixed(1) + " MB · " + ms + " ms";
+        fileSize(file.size) + " · " + ms + " ms";
       document.getElementById("slot" + slot).classList.add("loaded");
       if (slot === "B") view = "diff";
       renderSummary(); renderTabs(); render();
