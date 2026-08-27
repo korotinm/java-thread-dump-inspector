@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Thread Dump Inspector</title>
+</head>
+<body bgcolor="#FFFFFF" text="#000000" link="#0000EE" vlink="#551A8B">
+
+<h1>Thread Dump Inspector</h1>
+
+<p>Reads jstack-style Java thread dumps and points at what is wrong.<br>
+One HTML file. Runs in your browser.</p>
+
+<p><b>[ <a href="thread-inspector.html">Open the inspector</a> ]</b></p>
+
+<table border="1" cellpadding="4" cellspacing="0">
+<tr>
+  <th>Before using it</th>
+  <th>After using it</th>
+</tr>
+<tr>
+  <td><img src="media/before.png" alt="before" width="320"></td>
+  <td><img src="media/after.png" alt="after" width="320"></td>
+</tr>
+</table>
+
+<hr>
+
+<h2>The dump never leaves your machine</h2>
+
+<p>Parsed in the browser. No upload, no backend, no analytics, no external request &mdash;
+not even a font. Save the page and it works offline.</p>
+
+<p>Reads both layouts:</p>
+
+<pre>"name" - Thread t@N
+"name" #N ... tid=0x... nid=0x...</pre>
+
+<hr>
+
+<h2>Tabs</h2>
+
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><td><b>Findings</b></td><td>What looks wrong, ranked. Start here.</td></tr>
+<tr><td><b>Pools</b></td><td>Which pools are saturated, and what their busy threads do.</td></tr>
+<tr><td><b>Population</b></td><td>Which thread groups exist and how big they are.</td></tr>
+<tr><td><b>Top frame</b></td><td>Where threads sit right now, most crowded first.</td></tr>
+<tr><td><b>States</b></td><td>State counts, plus a Thread.State reference.</td></tr>
+<tr><td><b>Creation order</b></td><td>Threads in dump order. Leaks show up as a growing tail.</td></tr>
+<tr><td><b>Locks</b></td><td>Who waits on which lock, and who holds it.</td></tr>
+<tr><td><b>Stack search</b></td><td>Regex over full stacks.</td></tr>
+<tr><td><b>Compare</b></td><td>Two dumps: what grew, what went away.</td></tr>
+</table>
+
+<hr>
+
+<h2>Findings</h2>
+
+<p>Most checks are generic: a pool with every worker busy, threads piling up in one frame,
+several waiters on one lock.</p>
+
+<p>A few are <b>signatures</b>. They match frames of one library (HDFS, HikariCP) and carry a
+<tt>signature:</tt> badge, so a library-specific guess never reads as a universal truth.</p>
+
+<hr>
+
+<h2>Custom rules</h2>
+
+<p>Add your own without touching the source. Findings &gt; Custom rules &gt; + New rule.
+Write the body of <tt>function (d, helpers)</tt>:</p>
+
+<pre>var starved = d.threads.filter(function (t) {
+  return t.state === "BLOCKED" &amp;&amp; t.top.indexOf("com.acme.cache.") === 0;
+});
+if (starved.length &lt; 5) return [];
+
+return [{
+  level: "alert",
+  title: nThreads(starved.length) + " blocked on the cache lock",
+  text: "Find the holder in the Locks tab first.",
+  items: starved
+}];</pre>
+
+<p>Return one finding, an array of them, or nothing when the dump does not match.
+Every thread field and helper is listed in the editor, under <i>How to write a rule</i>, and in
+the <a href="https://github.com/korotinm/java-thread-dump-inspector#writing-a-rule">full
+reference</a>.</p>
+
+<p>Rules live in localStorage: your browser only, never sent anywhere. A rule that throws
+becomes its own finding card instead of breaking the tab.</p>
+
+<p>Ready-made rules for specific libraries:
+<a href="https://github.com/korotinm/java-thread-dump-inspector/tree/main/rules">rules/</a>.
+Paste one into the form to use it.</p>
+
+<hr>
+
+<p><a href="https://github.com/korotinm/java-thread-dump-inspector">Source on GitHub</a> |
+<a href="https://github.com/korotinm/java-thread-dump-inspector#contributing-a-rule">Contributing a rule</a> |
+<a href="https://github.com/korotinm/java-thread-dump-inspector/blob/main/LICENSE">MIT</a></p>
+
+</body>
+</html>

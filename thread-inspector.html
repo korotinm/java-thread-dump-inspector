@@ -56,7 +56,7 @@
   /* Ligatures off for every monospaced run: stack traces contain -> => != and must
      read character-for-character, not as glued glyphs. */
   code, pre, .m, td.n, th, .state, .f-level, .f-via,
-  .slot-label, .slot-name, .tile .k, .tile .v, input[type=text] {
+  .slot-label, .slot-name, .tile .k, .tile .v, input[type=text], textarea {
     font-variant-ligatures: none;
     font-feature-settings: "liga" 0, "calt" 0;
   }
@@ -266,6 +266,67 @@
   .stateref .ref-note { color: var(--dim); font-size: .82rem; }
   .stateref .state { cursor: default; }
 
+  .rules-box { border-top: 1px solid var(--rule); background: var(--panel-2); padding: .7rem .9rem .9rem; }
+  .rules-box summary {
+    font-family: var(--font-mono); font-size: .78rem; font-weight: 500;
+    cursor: pointer; color: var(--ink); user-select: none;
+  }
+  .rules-box summary:hover { color: var(--accent); }
+  .rules-box .hint { margin: .6rem 0 .8rem; max-width: 52rem; }
+  .rules-box .hint code { color: var(--ink-soft); }
+  .rules-list { display: flex; flex-direction: column; gap: .3rem; margin-bottom: .6rem; }
+  .rule-row {
+    display: flex; align-items: center; justify-content: space-between; gap: .6rem;
+    padding: .4rem .6rem; background: var(--panel); border: 1px solid var(--rule-soft);
+  }
+  .rule-toggle { display: flex; align-items: center; gap: .5rem; font-size: .84rem; color: var(--ink); }
+  .rule-actions { display: flex; gap: .4rem; flex: none; }
+  .rule-actions button { font-size: .72rem; padding: .22rem .55rem; }
+  .rule-form {
+    margin-top: .6rem; padding: .7rem; background: var(--bg); border: 1px dashed var(--rule);
+    display: flex; flex-direction: column; gap: .5rem;
+  }
+  .rule-form[hidden] { display: none; } /* a class selector's display beats the UA [hidden] rule otherwise */
+  .rule-form textarea {
+    font-family: var(--font-mono); font-size: .78rem; line-height: 1.5;
+    background: var(--panel); color: var(--ink);
+    border: 1px solid var(--rule); padding: .5rem .6rem; resize: vertical;
+  }
+  .rule-form textarea::placeholder { color: var(--faint); }
+  .rule-form-actions { display: flex; gap: .5rem; align-items: center; }
+  .rule-error { color: var(--st-blocked); font-size: .8rem; margin: 0; }
+
+  /* Reference for the rule author. Collapsed by default: it is long, and it is only needed
+     the first few times — after that it is in the way of the textarea. */
+  .rule-doc { border: 1px solid var(--rule-soft); background: var(--panel); }
+  .rule-doc summary {
+    padding: .45rem .6rem; cursor: pointer; user-select: none;
+    font-family: var(--font-mono); font-size: .74rem; color: var(--dim);
+  }
+  .rule-doc summary:hover { color: var(--accent); }
+  .rule-doc-body { padding: .1rem .7rem .8rem; }
+  .rule-doc p { margin: .45rem 0; font-size: .82rem; color: var(--ink-soft); max-width: 52rem; }
+  .rule-doc h4 {
+    margin: .9rem 0 .25rem; font-weight: 500;
+    font-family: var(--font-mono); font-size: .6rem;
+    letter-spacing: .1em; text-transform: uppercase; color: var(--faint);
+  }
+  .rule-doc table { font-size: .8rem; }
+  .rule-doc td { padding: .28rem .5rem .28rem 0; border-bottom: 1px solid var(--rule-soft); }
+  .rule-doc tr:last-child td { border-bottom: none; }
+  .rule-doc td:first-child {
+    font-family: var(--font-mono); color: var(--ink-bright);
+    white-space: nowrap; vertical-align: top; width: 1%; padding-right: 1rem;
+  }
+  .rule-doc td:last-child { color: var(--ink-soft); }
+  .rule-doc code { font-family: var(--font-mono); font-size: .95em; color: var(--ink); }
+  .rule-doc pre {
+    margin: .35rem 0 0; padding: .55rem .65rem;
+    background: var(--bg); border: 1px solid var(--rule-soft);
+    font-family: var(--font-mono); font-size: .74rem; line-height: 1.6;
+    color: var(--ink-soft); white-space: pre; overflow-x: auto;
+  }
+
   .empty { padding: 2.5rem .9rem; text-align: center; color: var(--dim); font-size: .88rem; }
 
   footer { color: var(--faint); font-size: .78rem; }
@@ -368,6 +429,8 @@
   var view = "findings";
   var sortDesc = true;
   var searchQuery = "";
+  var rulesBoxOpen = false;
+  var rulesDocOpen = false;
 
   function esc(s) {
     return String(s).replace(/[&<>"']/g, function (c) {
@@ -623,24 +686,11 @@
 
   // ------------------------------------------------------------------ findings
 
-  // Library signatures. Unlike the generic checks below these are stack-specific and stay
-  // silent when the frames are absent. Extend the list for your own stack: match() gets a
-  // thread, title() gets the hit count.
+  // Library signatures. Unlike the generic checks below these are stack-specific and stay silent
+  // when the frames are absent. The bar for adding one here is that a stranger with a JVM dump
+  // could plausibly be running the library — anything narrower belongs in rules/ as a rule to
+  // paste in, or the list grows into a junk drawer of other people's stacks.
   var SIGNATURES = [
-    {
-      via: "HDFS",
-      match: function (t) {
-        return /DFSOutputStream\$DataStreamer\.run/.test(t.frames.join("\n")) &&
-               !/^DataStreamer for file/.test(t.name);
-      },
-      title: function (n) { return nThreads(n) + " opened an HDFS write stream and wrote nothing"; },
-      text: "Hadoop renames a DataStreamer once it allocates a block, so an unnamed one means the " +
-            "output stream was created, no data was written and close() was never called. It will " +
-            "not exit before the process does. Look for an error path that leaves the resource open. " +
-            "Note the blind spot: a stream abandoned after writing keeps its file name and is not " +
-            "counted here — from a single dump it is indistinguishable from one still writing. " +
-            "Compare two dumps to tell them apart."
-    },
     {
       via: "HikariCP",
       match: function (t) { return /HikariPool\.getConnection|ConnectionPool\.borrow/.test(t.frames.join("\n")); },
@@ -649,6 +699,80 @@
             "held longer than needed. Check what the threads that already hold one are doing."
     }
   ];
+
+  // User-defined rules. Same idea as SIGNATURES above, but authored from the Findings tab
+  // itself instead of edited into the source, and free to look at the whole dump rather than
+  // one thread at a time. Stored in localStorage — never leaves the browser, same as the dump.
+  var RULES_KEY = "tdi.customRules";
+
+  function loadCustomRules() {
+    try {
+      var arr = JSON.parse(localStorage.getItem(RULES_KEY) || "[]");
+      return Array.isArray(arr) ? arr : [];
+    } catch (e) { return []; }
+  }
+
+  function saveCustomRules(rules) {
+    try { localStorage.setItem(RULES_KEY, JSON.stringify(rules)); } catch (e) {}
+  }
+
+  // What a rule's function body can call without importing anything: the same building
+  // blocks the built-in checks above use.
+  var RULE_HELPERS = { groupBy: groupBy, sortedGroups: sortedGroups, pools: pools, poolOf: poolOf, isIdleWorker: isIdleWorker, nThreads: nThreads };
+  var RULE_HELPER_NAMES = Object.keys(RULE_HELPERS);
+  var RULE_HELPER_VALUES = RULE_HELPER_NAMES.map(function (k) { return RULE_HELPERS[k]; });
+
+  // Compiled fresh on every run rather than cached: a rule is a handful of lines, re-parsing
+  // it costs nothing next to walking the thread list, and it means an edit takes effect the
+  // moment you hit Save with no invalidation to think about.
+  //
+  // Each helper is also its own parameter, so a rule can call nThreads(n) directly instead of
+  // helpers.nThreads(n). Reaching for the bare name is the first thing everybody tries, and a
+  // ReferenceError is a poor greeting for someone writing their first rule.
+  function compileRule(code) {
+    return Function.apply(null, ["d", "helpers"].concat(RULE_HELPER_NAMES, [code]));
+  }
+
+  function runCustomRules(d) {
+    var out = [];
+    loadCustomRules().forEach(function (rule) {
+      if (!rule.enabled) return;
+      try {
+        var res = compileRule(rule.code).apply(null, [d, RULE_HELPERS].concat(RULE_HELPER_VALUES));
+        if (!res) return;
+        (Array.isArray(res) ? res : [res]).forEach(function (r) {
+          if (!r || !r.title) return;
+          // items is rendered by subTable, which runs outside this try/catch — a rule that
+          // returns a single thread instead of a list would throw there and take the whole
+          // tab down. Wrap one, drop anything else.
+          var items = Array.isArray(r.items) ? r.items : (r.items && r.items.frames ? [r.items] : []);
+          out.push({
+            level: r.level === "alert" ? "alert" : "warn",
+            title: String(r.title),
+            text: r.text == null ? "" : String(r.text),
+            items: items,
+            via: rule.name,
+            custom: true
+          });
+        });
+      } catch (err) {
+        // The message goes in the text, not just the stack: Chrome repeats it on the first
+        // stack line but Firefox and Safari do not, and there the card showed frames only —
+        // every line of noise and not the one thing you need to read.
+        var msg = String((err && err.message) || err);
+        var stack = (err && err.stack) || "";
+        out.push({
+          level: "alert",
+          title: 'Custom rule "' + rule.name + '" threw and was skipped',
+          text: msg + " — fix it in the editor below the findings list.",
+          pre: stack.indexOf(msg) === 0 ? stack : (stack ? msg + "\n" + stack : msg),
+          via: rule.name,
+          custom: true
+        });
+      }
+    });
+    return out;
+  }
 
   function findings(d) {
     var out = [];
@@ -792,33 +916,163 @@
       out.push({ level: "warn", via: sig.via, title: sig.title(items.length), text: sig.text, items: items });
     });
 
+    // 6. User rules, see the editor at the bottom of the Findings tab.
+    out = out.concat(runCustomRules(d));
+
     var rank = { alert: 0, warn: 1 };
     return out.sort(function (a, b) { return rank[a.level] - rank[b.level] || (b.items ? b.items.length : 0) - (a.items ? a.items.length : 0); });
+  }
+
+  function ruleRow(r, i) {
+    return '<div class="rule-row">' +
+      '<label class="rule-toggle"><input type="checkbox" data-rule-toggle="' + i + '"' +
+      (r.enabled ? " checked" : "") + ">" + esc(r.name) + "</label>" +
+      '<span class="rule-actions">' +
+      '<button data-rule-edit="' + i + '">Edit</button>' +
+      '<button data-rule-del="' + i + '">Delete</button>' +
+      "</span></div>";
+  }
+
+  function docRows(pairs) {
+    return "<table><tbody>" + pairs.map(function (p) {
+      return "<tr><td>" + p[0] + "</td><td>" + p[1] + "</td></tr>";
+    }).join("") + "</tbody></table>";
+  }
+
+  // Written as field tables rather than prose. The previous version was one dense paragraph
+  // listing the same names, and nobody reads a paragraph looking for "what is t.norm".
+  function ruleDoc() {
+    var example =
+      '// Threads blocked inside our own code, and what most of them are doing\n' +
+      'var mine = d.threads.filter(function (t) {\n' +
+      '  return t.state === "BLOCKED" && t.top.indexOf("com.acme.") === 0;\n' +
+      '});\n' +
+      'if (mine.length < 5) return [];\n\n' +
+      'var top = sortedGroups(groupBy(mine, function (t) { return t.top; }))[0];\n' +
+      'return [{\n' +
+      '  level: "alert",\n' +
+      '  title: nThreads(mine.length) + " blocked in application code",\n' +
+      '  text: "Most of them in " + top.key + ".",\n' +
+      '  items: mine\n' +
+      '}];';
+
+    return '<details class="rule-doc"' + (rulesDocOpen ? " open" : "") + ">" +
+      "<summary>How to write a rule — fields and helpers</summary>" +
+      '<div class="rule-doc-body">' +
+
+      "<p>What you write is the <strong>body</strong> of <code>function (d, helpers)</code> — no " +
+      "wrapper, just the statements, ending in a <code>return</code>. Return one finding object or " +
+      "an array of them. Return nothing, <code>null</code> or <code>[]</code> when this dump does " +
+      "not match — that is the normal way for a rule to stay quiet.</p>" +
+
+      "<h4>What to return</h4>" +
+      docRows([
+        ["title", "Required. Headline of the card."],
+        ["text", "Optional. The explanation under it — say what to do next, not just what was found."],
+        ["level", 'Optional. <code>"alert"</code> (red, Action) or <code>"warn"</code> (yellow, Check). Default <code>"warn"</code>.'],
+        ["items", "Optional. Array of threads. Adds the <em>Show threads</em> button with their stacks."]
+      ]) +
+
+      "<h4>d — the loaded dump</h4>" +
+      docRows([
+        ["d.threads", "Array of every thread in the dump. Fields below."],
+        ["d.byState", 'Counts per state: <code>{ RUNNABLE: 12, BLOCKED: 3, … }</code>.'],
+        ["d.deadlock", "The JVM's own deadlock report as text, or <code>null</code> if it printed none."]
+      ]) +
+
+      "<h4>t — one thread</h4>" +
+      docRows([
+        ["t.name", "Name exactly as the dump spells it."],
+        ["t.norm", "Name with instance numbers collapsed to <code>N</code> — use this to group siblings, " +
+                   "<code>name</code> to match one specific thread."],
+        ["t.state", 'RUNNABLE, BLOCKED, WAITING, TIMED_WAITING, NEW, TERMINATED, or UNKNOWN when the ' +
+                    'dump did not say. Careful: RUNNABLE in a native call means idle, not busy.'],
+        ["t.top", "Topmost frame as a string — what the thread is doing right now. " +
+                  "<code>\"(no stack)\"</code> if the dump gave no frames."],
+        ["t.frames", "All frames, top first. Use <code>t.frames.join(\"\\n\")</code> to regex the whole stack."],
+        ["t.waitsFor", "<code>{ name, id, lock }</code> of the thread holding the lock this one waits on, " +
+                       "or <code>null</code>. Resolved for both monitors and j.u.c. locks."],
+        ["t.waitingOn", "Id of the lock it is waiting for, or <code>null</code>."],
+        ["t.locksHeld", "Ids of the locks it currently owns."],
+        ["t.id", "Thread id (<code>t@N</code> / <code>#N</code>), or <code>null</code> if absent."],
+        ["t.raw", "The thread's original dump lines, unparsed."]
+      ]) +
+
+      "<h4>helpers — the same building blocks the built-in checks use</h4>" +
+      "<p>Callable by bare name, or as <code>helpers.groupBy(…)</code> — whichever you prefer.</p>" +
+      docRows([
+        ["groupBy(arr, fn)", "→ <code>{ key: [items] }</code>, keyed by whatever <code>fn</code> returns."],
+        ["sortedGroups(map)", "→ <code>[{ key, items }]</code>, biggest group first. Feed it a <code>groupBy</code> result."],
+        ["pools(d)", "→ <code>[{ name, items, busy, ratio }]</code> — the thread groups behind the Pools tab. " +
+                     "<code>ratio</code> is 1 when every worker is busy."],
+        ["poolOf(t)", "→ the group name for a thread (its <code>norm</code>)."],
+        ["isIdleWorker(t)", "→ <code>true</code> for a worker parked on its task queue or an event loop — " +
+                            "waiting for work, not doing it."],
+        ["nThreads(n)", '→ <code>"1 thread"</code> / <code>"5 threads"</code>. For titles.']
+      ]) +
+
+      "<h4>Example</h4>" +
+      "<pre>" + esc(example) + "</pre>" +
+
+      "<p>Code runs synchronously — <code>await</code> and <code>fetch</code> will not work, and only " +
+      "Dump A is visible, not the comparison dump. A syntax error is caught when you press Save; " +
+      "anything that throws at runtime becomes its own finding card with the message, so a broken " +
+      "rule never takes down this tab.</p>" +
+      "</div></details>";
+  }
+
+  // The manager is appended below the findings list regardless of whether anything fired,
+  // so a clean dump doesn't hide the one place rules get written and edited.
+  function rulesManager() {
+    var rules = loadCustomRules();
+    var placeholder = 'return d.threads.filter(t => t.state === "BLOCKED").length > 20\n' +
+      '  ? [{ title: "Lots of BLOCKED threads", text: "..." }]\n  : [];';
+    return '<details class="rules-box"' + (rulesBoxOpen ? " open" : "") + ">" +
+      "<summary>Custom rules (" + rules.length + ")</summary>" +
+      '<p class="hint">Rules are saved in this browser and run only here, on the dump you loaded — ' +
+      "nothing is sent anywhere. Open a rule to see what a rule can read and return.</p>" +
+      '<div class="rules-list">' + rules.map(ruleRow).join("") +
+      (rules.length ? "" : '<p class="hint">No custom rules yet.</p>') + "</div>" +
+      "<button data-rule-new>+ New rule</button>" +
+      '<div class="rule-form" hidden id="ruleForm" data-editing="">' +
+      ruleDoc() +
+      '<input type="text" id="ruleNameInput" placeholder="Rule name" maxlength="60">' +
+      '<textarea id="ruleCodeInput" rows="7" spellcheck="false" placeholder="' + esc(placeholder) + '"></textarea>' +
+      '<div class="rule-form-actions">' +
+      "<button data-rule-save>Save</button>" +
+      "<button data-rule-cancel>Cancel</button>" +
+      "</div>" +
+      '<p class="rule-error" hidden id="ruleError"></p>' +
+      "</div></details>";
   }
 
   function viewFindings(d) {
     var fs = findings(d);
     if (!fs.length) {
       return '<div class="empty">No known problem patterns found. ' +
-             "Not a guarantee — check Pools and Population yourself.</div>";
+             "Not a guarantee — check Pools and Population yourself.</div>" +
+             rulesManager();
     }
     var LV = { alert: "Action", warn: "Check" };
     return '<div class="panel-top"><p class="hint">Unlabelled checks are generic. Checks marked ' +
-      "with a signature match frames of a specific library and stay silent on unrelated dumps; " +
-      "the signature list in the source is meant to be extended.</p></div>" +
+      "signature match frames of a specific library; checks marked custom came from the rules " +
+      "editor below. Both stay silent on dumps they don't apply to.</p></div>" +
       '<div class="findings">' + fs.map(function (f, i) {
         return '<div class="finding f-' + f.level + '">' +
           '<div class="f-head"><span class="f-level">' + LV[f.level] + "</span>" +
           '<span class="f-title">' + esc(f.title) + "</span>" +
-          (f.via ? '<span class="f-via">signature: ' + esc(f.via) + "</span>" : "") + "</div>" +
+          (f.via ? '<span class="f-via">' + (f.custom ? "custom: " : "signature: ") + esc(f.via) + "</span>" : "") + "</div>" +
           '<p class="f-text">' + esc(f.text) + "</p>" +
           (f.pre
             ? '<pre class="stack">' + esc(f.pre) + "</pre>"
-            : '<div class="f-more"><button class="f-toggle" data-f="' + i + '">Show threads (' +
-              f.items.length + ")</button></div>" +
-              '<div hidden data-fbody="' + i + '">' + subTable(f.items, 80) + "</div>") +
+            : f.items.length
+              ? '<div class="f-more"><button class="f-toggle" data-f="' + i + '">Show threads (' +
+                f.items.length + ")</button></div>" +
+                '<div hidden data-fbody="' + i + '">' + subTable(f.items, 80) + "</div>"
+              : "") +
           "</div>";
-      }).join("") + "</div>";
+      }).join("") + "</div>" +
+      rulesManager();
   }
 
   // ------------------------------------------------------------------ summary
@@ -1095,6 +1349,14 @@
     }
     panel.innerHTML = html;
     if (view === "search") runSearch();
+
+    // <details> loses its open/closed state on every innerHTML replacement; track it
+    // ourselves so saving a rule doesn't slam the box shut on you. The toggle event does
+    // not bubble, so the nested reference needs its own listener.
+    var rb = panel.querySelector(".rules-box");
+    if (rb) rb.addEventListener("toggle", function () { rulesBoxOpen = rb.open; });
+    var rd = panel.querySelector(".rule-doc");
+    if (rd) rd.addEventListener("toggle", function () { rulesDocOpen = rd.open; });
   }
 
   // ------------------------------------------------------------------ events
@@ -1123,6 +1385,73 @@
       return;
     }
 
+    var ruleNewBtn = e.target.closest("[data-rule-new]");
+    if (ruleNewBtn) {
+      var newForm = document.getElementById("ruleForm");
+      newForm.dataset.editing = "new";
+      document.getElementById("ruleNameInput").value = "";
+      document.getElementById("ruleCodeInput").value = "";
+      document.getElementById("ruleError").hidden = true;
+      newForm.hidden = false;
+      document.getElementById("ruleNameInput").focus();
+      return;
+    }
+
+    var ruleEditBtn = e.target.closest("[data-rule-edit]");
+    if (ruleEditBtn) {
+      var editIdx = ruleEditBtn.dataset.ruleEdit;
+      var ruleToEdit = loadCustomRules()[editIdx];
+      if (!ruleToEdit) return;
+      var editForm = document.getElementById("ruleForm");
+      editForm.dataset.editing = editIdx;
+      document.getElementById("ruleNameInput").value = ruleToEdit.name;
+      document.getElementById("ruleCodeInput").value = ruleToEdit.code;
+      document.getElementById("ruleError").hidden = true;
+      editForm.hidden = false;
+      return;
+    }
+
+    var ruleDelBtn = e.target.closest("[data-rule-del]");
+    if (ruleDelBtn) {
+      var rulesAfterDel = loadCustomRules();
+      var delIdx = Number(ruleDelBtn.dataset.ruleDel);
+      if (rulesAfterDel[delIdx] && confirm('Delete rule "' + rulesAfterDel[delIdx].name + '"?')) {
+        rulesAfterDel.splice(delIdx, 1);
+        saveCustomRules(rulesAfterDel);
+        rulesBoxOpen = true;
+        render();
+      }
+      return;
+    }
+
+    if (e.target.closest("[data-rule-cancel]")) {
+      document.getElementById("ruleForm").hidden = true;
+      return;
+    }
+
+    var ruleSaveBtn = e.target.closest("[data-rule-save]");
+    if (ruleSaveBtn) {
+      var ruleName = document.getElementById("ruleNameInput").value.trim();
+      var ruleCode = document.getElementById("ruleCodeInput").value;
+      var ruleErrEl = document.getElementById("ruleError");
+      if (!ruleName) { ruleErrEl.textContent = "Name it first."; ruleErrEl.hidden = false; return; }
+      try { compileRule(ruleCode); }
+      catch (err) { ruleErrEl.textContent = "Doesn't parse: " + err.message; ruleErrEl.hidden = false; return; }
+      var rulesAfterSave = loadCustomRules();
+      var editing = document.getElementById("ruleForm").dataset.editing;
+      if (editing === "new") {
+        rulesAfterSave.push({ name: ruleName, code: ruleCode, enabled: true });
+      } else {
+        rulesAfterSave[Number(editing)] = {
+          name: ruleName, code: ruleCode, enabled: rulesAfterSave[Number(editing)].enabled
+        };
+      }
+      saveCustomRules(rulesAfterSave);
+      rulesBoxOpen = true;
+      render();
+      return;
+    }
+
     var row = e.target.closest("tr[data-group], tr[data-stack]");
     if (!row) return;
     var key = row.dataset.group !== undefined ? "groupbody" : "body";
@@ -1132,9 +1461,18 @@
   });
 
   document.getElementById("panel").addEventListener("input", function (e) {
-    if (e.target.id !== "q") return;
-    searchQuery = e.target.value;
-    runSearch();
+    if (e.target.id === "q") { searchQuery = e.target.value; runSearch(); return; }
+
+    if (e.target.matches("[data-rule-toggle]")) {
+      var rules = loadCustomRules();
+      var toggleIdx = Number(e.target.dataset.ruleToggle);
+      if (rules[toggleIdx]) {
+        rules[toggleIdx].enabled = e.target.checked;
+        saveCustomRules(rules);
+        rulesBoxOpen = true;
+        render();
+      }
+    }
   });
 
   function load(slot, file) {
