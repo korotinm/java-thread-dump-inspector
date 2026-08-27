@@ -1,11 +1,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Thread Dump Inspector</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap">
-
 <style>
+  /* System fonts only — no external requests. The page is meant to be usable on an isolated
+     machine or straight from disk, and a diagnostic tool for internal dumps has no business
+     reaching out to a third-party CDN. */
+  :root {
+    --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+                 "DejaVu Sans Mono", "Liberation Mono", monospace;
+  }
+
   /* Palette, type and the flat, unrounded shapes come from the yank-run design system.
      Single dark theme on purpose — the system commits to one world, so there is no
      light variant to invert into. Every colour is painted explicitly. */
@@ -41,7 +46,7 @@
     margin: 0;
     background: var(--bg);
     color: var(--ink);
-    font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+    font-family: var(--font-sans);
     font-size: 15px;
     line-height: 1.55;
     -webkit-font-smoothing: antialiased;
@@ -74,7 +79,7 @@
 
   .head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .35rem 1.25rem; }
   .head h1 {
-    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-family: var(--font-mono);
     font-size: 1.3rem; font-weight: 700; margin: 0;
     letter-spacing: -.01em; color: var(--ink-bright);
   }
@@ -95,19 +100,19 @@
   .slot.over { border-color: var(--accent); background: var(--panel-2); }
 
   .slot-label {
-    font-family: "JetBrains Mono", monospace;
+    font-family: var(--font-mono);
     font-size: .66rem; letter-spacing: .1em; text-transform: uppercase;
     color: var(--faint); flex: none;
   }
   .slot-body { flex: 1; min-width: 0; }
   .slot-name {
-    font-family: "JetBrains Mono", monospace; font-size: .82rem; color: var(--ink);
+    font-family: var(--font-mono); font-size: .82rem; color: var(--ink);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .slot-meta { color: var(--dim); font-size: .78rem; }
 
   button, .filebtn {
-    font-family: "JetBrains Mono", monospace; font-size: .78rem; font-weight: 500;
+    font-family: var(--font-mono); font-size: .78rem; font-weight: 500;
     background: none; color: var(--ink);
     border: 1px solid var(--rule);
     padding: .34rem .7rem; cursor: pointer;
@@ -126,11 +131,11 @@
     padding: .6rem .9rem; min-width: 8rem;
   }
   .tile .k {
-    font-family: "JetBrains Mono", monospace;
+    font-family: var(--font-mono);
     font-size: .64rem; letter-spacing: .09em; text-transform: uppercase; color: var(--faint);
   }
   .tile .v {
-    font-family: "JetBrains Mono", monospace; font-weight: 700; color: var(--ink-bright);
+    font-family: var(--font-mono); font-weight: 700; color: var(--ink-bright);
     font-size: 1.4rem; font-variant-numeric: tabular-nums; line-height: 1.25;
   }
 
@@ -139,7 +144,7 @@
 
   .legend {
     display: flex; flex-wrap: wrap; gap: .3rem 1.1rem;
-    font-family: "JetBrains Mono", monospace; font-size: .72rem; color: var(--muted);
+    font-family: var(--font-mono); font-size: .72rem; color: var(--muted);
   }
   .legend span { display: inline-flex; align-items: center; gap: .38rem; }
   .dot { width: 8px; height: 8px; flex: none; }
@@ -148,7 +153,7 @@
   .tab {
     border: none; border-bottom: 2px solid transparent;
     padding: .5rem .8rem; color: var(--dim);
-    font-family: Inter, sans-serif; font-size: .86rem;
+    font-family: var(--font-sans); font-size: .86rem;
   }
   .tab:hover { color: var(--ink); border-color: var(--rule); }
   .tab[aria-selected="true"] { color: var(--accent); border-color: var(--accent); font-weight: 500; }
@@ -161,7 +166,7 @@
   .hint { color: var(--dim); font-size: .8rem; margin: 0; }
 
   input[type=text] {
-    font-family: "JetBrains Mono", monospace; font-size: .8rem;
+    font-family: var(--font-mono); font-size: .8rem;
     background: var(--bg); color: var(--ink);
     border: 1px solid var(--rule); padding: .34rem .6rem;
     flex: 1; min-width: 12rem;
@@ -171,7 +176,7 @@
   .scroll { overflow-x: auto; }
   table { border-collapse: collapse; width: 100%; font-size: .85rem; }
   th {
-    text-align: left; font-family: "JetBrains Mono", monospace; font-weight: 500;
+    text-align: left; font-family: var(--font-mono); font-weight: 500;
     font-size: .64rem; letter-spacing: .09em; text-transform: uppercase; color: var(--faint);
     padding: .55rem .9rem; border-bottom: 1px solid var(--rule); white-space: nowrap;
   }
@@ -180,15 +185,15 @@
   td { padding: .42rem .9rem; border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
   tr:last-child td { border-bottom: none; }
   td.n {
-    font-family: "JetBrains Mono", monospace; font-variant-numeric: tabular-nums;
+    font-family: var(--font-mono); font-variant-numeric: tabular-nums;
     text-align: right; white-space: nowrap; color: var(--ink-bright);
   }
-  td.m { font-family: "JetBrains Mono", monospace; word-break: break-all; color: var(--ink-soft); }
+  td.m { font-family: var(--font-mono); word-break: break-all; color: var(--ink-soft); }
   tr.clickable { cursor: pointer; }
   tr.clickable:hover td { background: var(--panel-2); }
 
   .state {
-    font-family: "JetBrains Mono", monospace; font-size: .68rem;
+    font-family: var(--font-mono); font-size: .68rem;
     padding: .1rem .4rem; white-space: nowrap;
     border: 1px solid currentColor;
     color: var(--muted);            /* default for states we have no opinion about */
@@ -209,17 +214,17 @@
   .f-warn  { border-left-color: var(--st-timed); }
   .f-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem .7rem; }
   .f-level {
-    font-family: "JetBrains Mono", monospace; font-size: .62rem;
+    font-family: var(--font-mono); font-size: .62rem;
     letter-spacing: .1em; text-transform: uppercase;
   }
   .f-alert .f-level { color: var(--st-blocked); }
   .f-warn  .f-level { color: var(--st-timed); }
   .f-title {
-    font-family: "JetBrains Mono", monospace; font-weight: 700;
+    font-family: var(--font-mono); font-weight: 700;
     font-size: .95rem; color: var(--ink-bright);
   }
   .f-via {
-    font-family: "JetBrains Mono", monospace; font-size: .62rem;
+    font-family: var(--font-mono); font-size: .62rem;
     color: var(--faint); border: 1px solid var(--rule);
     padding: .05rem .35rem; white-space: nowrap;
   }
@@ -238,7 +243,7 @@
 
   .stack {
     background: var(--bg); border-top: 1px solid var(--rule);
-    padding: .6rem .9rem; font-family: "JetBrains Mono", monospace;
+    padding: .6rem .9rem; font-family: var(--font-mono);
     font-size: .73rem; line-height: 1.6; color: var(--ink-soft);
     white-space: pre; overflow-x: auto; margin: 0;
   }
@@ -249,10 +254,22 @@
   .delta-up, td.n.delta-up { color: var(--st-blocked); }
   .delta-down, td.n.delta-down { color: var(--st-runnable); }
 
+  .stateref { border-top: 1px solid var(--rule); background: var(--panel-2); }
+  .stateref-head {
+    font-family: var(--font-mono); font-size: .62rem;
+    letter-spacing: .1em; text-transform: uppercase; color: var(--faint);
+    padding: .7rem .9rem .35rem;
+  }
+  .stateref td { border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
+  .stateref tr:last-child td { border-bottom: none; }
+  .stateref .ref-what { color: var(--ink-soft); font-size: .84rem; }
+  .stateref .ref-note { color: var(--dim); font-size: .82rem; }
+  .stateref .state { cursor: default; }
+
   .empty { padding: 2.5rem .9rem; text-align: center; color: var(--dim); font-size: .88rem; }
 
   footer { color: var(--faint); font-size: .78rem; }
-  footer code { font-family: "JetBrains Mono", monospace; font-size: .95em; color: var(--dim); }
+  footer code { font-family: var(--font-mono); font-size: .95em; color: var(--dim); }
 </style>
 
 <div class="app">
@@ -307,6 +324,40 @@
   // Preferred order for the states we know; anything else the dump contains is appended,
   // so an unexpected value shows up instead of silently vanishing from the bar and legend.
   var STATE_ORDER = ["BLOCKED", "RUNNABLE", "TIMED_WAITING", "WAITING", "NEW", "TERMINATED", "UNKNOWN"];
+
+  // What each state means, and the thing about it that is easy to get wrong.
+  var STATE_DOC = {
+    BLOCKED: {
+      what: "Waiting to enter a synchronized block or method.",
+      note: "Someone else holds the monitor. Find the holder — the waiters are only a symptom."
+    },
+    RUNNABLE: {
+      what: "Eligible to run, as far as the JVM can tell.",
+      note: "Not proof of CPU use. A thread blocked in a native call — socketRead0, epollWait — " +
+            "is also RUNNABLE, because the JVM cannot see past the native boundary."
+    },
+    TIMED_WAITING: {
+      what: "Parked with a deadline: sleep(), wait(ms), parkNanos(), poll(timeout).",
+      note: "Wakes on its own even if nothing happens, so a stuck thread here can look alive."
+    },
+    WAITING: {
+      what: "Parked indefinitely: Object.wait(), Thread.join(), LockSupport.park().",
+      note: "Only another thread can wake it. Nothing here times out by itself."
+    },
+    NEW: {
+      what: "Created but never started.",
+      note: "Rare in a dump — a thread usually appears only once it is running."
+    },
+    TERMINATED: {
+      what: "Finished executing.",
+      note: "Rare in a dump for the same reason."
+    },
+    UNKNOWN: {
+      what: "This tool's label for a thread with no Thread.State line.",
+      note: "JVM-internal threads — VM Thread, GC task thread, VM Periodic Task Thread — are not " +
+            "Java threads and have no state to report. Not an error."
+    }
+  };
 
   function statesPresent(d) {
     var known = STATE_ORDER.filter(function (s) { return d.byState[s]; });
@@ -830,7 +881,13 @@
     }).join("");
   }
 
-  function stateChip(s) { return '<span class="state s-' + s + '">' + s + "</span>"; }
+  // The chip carries its own explanation on hover, so the meaning is reachable from every
+  // table without leaving for the reference.
+  function stateChip(s) {
+    var doc = STATE_DOC[s];
+    var tip = doc ? ' title="' + esc(doc.what + " " + doc.note) + '"' : "";
+    return '<span class="state s-' + s + '"' + tip + ">" + s + "</span>";
+  }
 
   function threadRows(items, limit) {
     var shown = items.slice(0, limit || 400);
@@ -921,8 +978,25 @@
         '<tr hidden data-groupbody="' + i + '"><td colspan="3" style="padding:0">' +
         subTable(g.items, 200) + "</td></tr>";
     }).join("");
-    return tableWrap("<th>Count</th><th>State</th><th>Most common group</th>", body,
-      "RUNNABLE with a native frame (socketRead0, epollWait) means idle, not load.");
+    // No hint strip here: the reference below carries the same caveats in full, and saying
+    // it twice on one screen only teaches people to skip both.
+    return tableWrap("<th>Count</th><th>State</th><th>Most common group</th>", body) +
+      stateReference();
+  }
+
+  // Always lists every Thread.State, not only the ones this dump happens to contain — it is
+  // a reference, and the value of a reference is that it answers the question before you
+  // have to look it up elsewhere.
+  function stateReference() {
+    var rows = STATE_ORDER.map(function (s) {
+      return "<tr><td>" + stateChip(s) + "</td>" +
+        '<td class="ref-what">' + esc(STATE_DOC[s].what) + "</td>" +
+        '<td class="ref-note">' + esc(STATE_DOC[s].note) + "</td></tr>";
+    }).join("");
+
+    return '<div class="stateref">' +
+      '<div class="stateref-head">Thread.State reference</div>' +
+      '<div class="scroll"><table><tbody>' + rows + "</tbody></table></div></div>";
   }
 
   function viewOrder(d) {
