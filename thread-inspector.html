@@ -965,6 +965,9 @@
       "an array of them. Return nothing, <code>null</code> or <code>[]</code> when this dump does " +
       "not match — that is the normal way for a rule to stay quiet.</p>" +
 
+      "<p>Every helper is also in scope under its own name, so <code>nThreads(n)</code> and " +
+      "<code>helpers.nThreads(n)</code> are the same call. The example below uses the short form.</p>" +
+
       "<h4>What to return</h4>" +
       docRows([
         ["title", "Required. Headline of the card."],
@@ -999,7 +1002,6 @@
       ]) +
 
       "<h4>helpers — the same building blocks the built-in checks use</h4>" +
-      "<p>Callable by bare name, or as <code>helpers.groupBy(…)</code> — whichever you prefer.</p>" +
       docRows([
         ["groupBy(arr, fn)", "→ <code>{ key: [items] }</code>, keyed by whatever <code>fn</code> returns."],
         ["sortedGroups(map)", "→ <code>[{ key, items }]</code>, biggest group first. Feed it a <code>groupBy</code> result."],
@@ -1444,6 +1446,16 @@
       var rulesAfterSave = loadCustomRules();
       var editing = document.getElementById("ruleForm").dataset.editing;
       if (editing === "new") {
+        // Reworking a rule through "New rule" instead of Edit leaves the old one enabled, and
+        // its finding sits above the new one — which reads as "I saved and nothing changed".
+        // Names are how you tell rules apart, so refuse to have two of them.
+        var clash = rulesAfterSave.some(function (r) { return r.name === ruleName; });
+        if (clash) {
+          ruleErrEl.textContent = 'A rule named "' + ruleName + '" already exists. ' +
+            "Use its Edit button to change it, or pick another name.";
+          ruleErrEl.hidden = false;
+          return;
+        }
         rulesAfterSave.push({ name: ruleName, code: ruleCode, enabled: true });
       } else {
         rulesAfterSave[Number(editing)] = {
