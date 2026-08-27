@@ -5,7 +5,8 @@ need it.
 
 ## Using a rule
 
-1. Open a dump in the [inspector](https://korotinm.github.io/java-thread-dump-inspector/).
+1. Open a dump in the
+   [inspector](https://korotinm.github.io/java-thread-dump-inspector/thread-inspector.html).
 2. **Findings → Custom rules → + New rule**.
 3. Paste the whole file into the code box, give it a name, **Save**.
 
@@ -26,7 +27,7 @@ fire. See [Writing a rule](../README.md#writing-a-rule) for the fields and helpe
 
 ## What lives here and what ships built in
 
-The inspector carries a few library signatures itself (currently HikariCP). The bar for those is
+The inspector ships one library signature built in, for HikariCP. The bar for adding another is
 that a stranger with a JVM dump could plausibly be running that library.
 
 Everything narrower goes here: one company's stack, an uncommon library, a pattern that only makes

@@ -12,8 +12,11 @@ browser, never uploaded.
 ## Findings
 
 Most checks are generic: a pool with every worker busy, threads piling up in one frame, several
-waiters on one lock. A few are **signatures** — they match frames of one library (HDFS, HikariCP)
-and carry a `signature:` badge, so a library-specific guess never reads as a universal truth.
+waiters on one lock, a deadlock the JVM reported itself.
+
+Checks that match frames of a specific library carry a `signature:` badge, so a library-specific
+guess never reads as a universal truth. Only HikariCP ships built in; narrower ones live in
+[`rules/`](rules) and are pasted in when you need them.
 
 ## Custom rules
 

@@ -1029,8 +1029,8 @@
       '  ? [{ title: "Lots of BLOCKED threads", text: "..." }]\n  : [];';
     return '<details class="rules-box"' + (rulesBoxOpen ? " open" : "") + ">" +
       "<summary>Custom rules (" + rules.length + ")</summary>" +
-      '<p class="hint">Rules are saved in this browser and run only here, on the dump you loaded — ' +
-      "nothing is sent anywhere. Open a rule to see what a rule can read and return.</p>" +
+      '<p class="hint">Saved in this browser, never sent anywhere. ' +
+      "<em>New rule</em> opens the editor and the reference.</p>" +
       '<div class="rules-list">' + rules.map(ruleRow).join("") +
       (rules.length ? "" : '<p class="hint">No custom rules yet.</p>') + "</div>" +
       "<button data-rule-new>+ New rule</button>" +
@@ -1054,9 +1054,13 @@
              rulesManager();
     }
     var LV = { alert: "Action", warn: "Check" };
-    return '<div class="panel-top"><p class="hint">Unlabelled checks are generic. Checks marked ' +
-      "signature match frames of a specific library; checks marked custom came from the rules " +
-      "editor below. Both stay silent on dumps they don't apply to.</p></div>" +
+    // The badge legend only earns its space when a badge is actually on screen. Explaining
+    // labels the reader cannot see is how a panel fills up with text nobody reads.
+    var badged = fs.some(function (f) { return f.via; });
+    return (badged
+        ? '<div class="panel-top"><p class="hint">Unlabelled checks are generic. ' +
+          "<b>signature</b> matches one library, <b>custom</b> came from your rules below.</p></div>"
+        : "") +
       '<div class="findings">' + fs.map(function (f, i) {
         return '<div class="finding f-' + f.level + '">' +
           '<div class="f-head"><span class="f-level">' + LV[f.level] + "</span>" +
@@ -1285,7 +1289,7 @@
 
   function viewSearch() {
     return '<div class="panel-top">' +
-      '<input type="text" id="q" placeholder="regex over stacks, e.g. getApplications|DataStreamer" value="' + esc(searchQuery) + '">' +
+      '<input type="text" id="q" placeholder="regex over stacks, e.g. socketRead0|getConnection" value="' + esc(searchQuery) + '">' +
       '<span class="hint" id="qcount"></span></div><div id="qres"></div>';
   }
 
