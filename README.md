@@ -34,6 +34,9 @@ What you write is the **body** of `function (d, helpers)` — no wrapper, just t
 ending in a `return`. Return one finding object or an array of them. Return nothing, `null` or
 `[]` when the dump does not match; that is how a rule stays quiet.
 
+Every helper is also in scope under its own name, so `nThreads(n)` and `helpers.nThreads(n)` are
+the same call. The example below uses the short form.
+
 ```js
 // Threads blocked inside our own code, and what most of them are doing
 var mine = d.threads.filter(function (t) {
@@ -83,8 +86,6 @@ return [{
 | `t.raw` | The thread's original dump lines, unparsed. |
 
 ### `helpers` — the same building blocks the built-in checks use
-
-Callable by bare name, or as `helpers.groupBy(…)` — whichever you prefer.
 
 | Helper | |
 |:--|:--|
