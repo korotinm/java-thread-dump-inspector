@@ -11,7 +11,7 @@
 <p>Reads jstack-style Java thread dumps and points at what is wrong.<br>
 One HTML file. Runs in your browser.</p>
 
-<p><b>[ <a href="thread-inspector.html">Open the inspector</a> ]</b></p>
+<p><font size="+3"><b>[ <a href="thread-inspector.html">Open the inspector</a> ]</b></font></p>
 
 <table border="1" cellpadding="4" cellspacing="0">
 <tr>
@@ -57,10 +57,12 @@ not even a font. Save the page and it works offline.</p>
 <h2>Findings</h2>
 
 <p>Most checks are generic: a pool with every worker busy, threads piling up in one frame,
-several waiters on one lock.</p>
+several waiters on one lock, a deadlock the JVM reported itself.</p>
 
-<p>A few are <b>signatures</b>. They match frames of one library (HDFS, HikariCP) and carry a
-<tt>signature:</tt> badge, so a library-specific guess never reads as a universal truth.</p>
+<p>Checks that match frames of a specific library carry a <tt>signature:</tt> badge, so a
+library-specific guess never reads as a universal truth. Only HikariCP ships built in; narrower
+ones live in
+<a href="https://github.com/korotinm/java-thread-dump-inspector/tree/main/rules">rules/</a>.</p>
 
 <hr>
 
