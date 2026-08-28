@@ -733,6 +733,12 @@
     return Function.apply(null, ["d", "helpers"].concat(RULE_HELPER_NAMES, [code]));
   }
 
+  // What the thread table needs to render a row and its stack. Anything else in items is a
+  // rule bug, not a thread.
+  function isThread(x) {
+    return !!x && Array.isArray(x.raw) && Array.isArray(x.frames);
+  }
+
   function runCustomRules(d) {
     var out = [];
     loadCustomRules().forEach(function (rule) {
@@ -742,14 +748,21 @@
         if (!res) return;
         (Array.isArray(res) ? res : [res]).forEach(function (r) {
           if (!r || !r.title) return;
-          // items is rendered by subTable, which runs outside this try/catch — a rule that
-          // returns a single thread instead of a list would throw there and take the whole
-          // tab down. Wrap one, drop anything else.
-          var items = Array.isArray(r.items) ? r.items : (r.items && r.items.frames ? [r.items] : []);
+          // items is rendered by subTable, which runs outside this try/catch, so anything that
+          // is not a thread throws there and takes the whole tab down with it. Checking that
+          // items is an array is not enough — the array has to hold threads, and a rule that
+          // returns groups, keys or plain objects is an easy mistake to make.
+          var given = Array.isArray(r.items) ? r.items : (r.items ? [r.items] : []);
+          var items = given.filter(isThread);
+          var dropped = given.length - items.length;
+          var note = dropped
+            ? " (" + dropped + " returned item" + (dropped === 1 ? " was" : "s were") +
+              " not a thread and got dropped — items must hold objects from d.threads.)"
+            : "";
           out.push({
             level: r.level === "alert" ? "alert" : "warn",
             title: String(r.title),
-            text: r.text == null ? "" : String(r.text),
+            text: (r.text == null ? "" : String(r.text)) + note,
             items: items,
             via: rule.name,
             custom: true
@@ -1342,16 +1355,26 @@
     if (!dumps.A) { panel.innerHTML = '<div class="empty">Load a dump to start.</div>'; return; }
     var d = dumps.A;
     var html;
-    switch (view) {
-      case "findings":   html = viewFindings(d); break;
-      case "pools":      html = viewPools(d); break;
-      case "population": html = viewPopulation(d); break;
-      case "topframe":   html = viewTopFrame(d); break;
-      case "states":     html = viewStates(d); break;
-      case "order":      html = viewOrder(d); break;
-      case "locks":      html = viewLocks(d); break;
-      case "search":     html = viewSearch(); break;
-      case "diff":       html = viewDiff(); break;
+    // A throwing view used to leave the assignment below unreached, so the panel kept the
+    // previous tab's content — Findings showing the Pools table, with no clue why. Worse, on
+    // Findings it also swallowed the rules editor, so a bad rule locked you out of the one
+    // screen that can delete it. Render the failure instead, and keep that editor reachable.
+    try {
+      switch (view) {
+        case "findings":   html = viewFindings(d); break;
+        case "pools":      html = viewPools(d); break;
+        case "population": html = viewPopulation(d); break;
+        case "topframe":   html = viewTopFrame(d); break;
+        case "states":     html = viewStates(d); break;
+        case "order":      html = viewOrder(d); break;
+        case "locks":      html = viewLocks(d); break;
+        case "search":     html = viewSearch(); break;
+        case "diff":       html = viewDiff(); break;
+      }
+    } catch (err) {
+      html = '<div class="empty">This tab failed to render: ' +
+        esc(String((err && err.message) || err)) + "</div>" +
+        (view === "findings" ? rulesManager() : "");
     }
     panel.innerHTML = html;
     if (view === "search") runSearch();
