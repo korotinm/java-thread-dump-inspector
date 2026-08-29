@@ -193,11 +193,15 @@
   tr.clickable:hover td { background: var(--panel-2); }
 
   .state {
+    /* inline-block, not inline: an inline box ignores its own padding and border when the
+       line box is measured, so wrapped chips climb on top of each other. */
+    display: inline-block;
     font-family: var(--font-mono); font-size: .68rem;
     padding: .1rem .4rem; white-space: nowrap;
     border: 1px solid currentColor;
     color: var(--muted);            /* default for states we have no opinion about */
   }
+  .states { display: flex; flex-wrap: wrap; gap: .25rem; }
   .s-BLOCKED { color: var(--st-blocked); }
   .s-RUNNABLE { color: var(--st-runnable); }
   .s-WAITING { color: var(--st-waiting); }
@@ -674,11 +678,14 @@
           '" style="width:' + Math.max(p.ratio * 100, 2) + '%"></div></td>' +
         '<td class="m">' + (topBusy ? esc(topBusy.key) + (topBusy.items.length > 1 ? " ×" + topBusy.items.length : "") : "—") + "</td></tr>" +
         '<tr hidden data-groupbody="' + i + '"><td colspan="5" style="padding:0">' +
-        subTable(p.items, 100) + "</td></tr>";
+        // Busy first. The list is capped, and in dump order the few busy threads of a large
+        // pool can fall past the cap — so the row advertises what they are doing and expanding
+        // it shows a hundred idle ones instead. They are the reason the row gets opened.
+        subTable(p.busy.concat(p.items.filter(isIdleWorker)), 100) + "</td></tr>";
     }).join("");
 
     return tableWrap(
-      "<th>Pool</th><th>Threads</th><th>Busy</th><th></th><th>What they do</th>",
+      "<th>Pool</th><th>Threads</th><th>Busy</th><th></th><th>Busy top frame</th>",
       body,
       "Busy = not waiting for a task. A fully busy pool means everything that uses it is queued."
     );
@@ -1200,9 +1207,9 @@
 
   function statesOf(items) {
     var c = countBy(items, function (t) { return t.state; });
-    return Object.keys(c).sort().map(function (s) {
+    return '<span class="states">' + Object.keys(c).sort().map(function (s) {
       return '<span class="state s-' + s + '">' + s + " " + c[s] + "</span>";
-    }).join(" ");
+    }).join("") + "</span>";
   }
 
   function viewPopulation(d) {
