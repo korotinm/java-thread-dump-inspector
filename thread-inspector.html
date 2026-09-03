@@ -110,6 +110,7 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .slot-meta { color: var(--dim); font-size: .78rem; }
+  .slot-warn { color: var(--st-blocked); font-size: .78rem; margin-top: .15rem; }
 
   button, .filebtn {
     font-family: var(--font-mono); font-size: .78rem; font-weight: 500;
@@ -333,8 +334,6 @@
 
   .empty { padding: 2.5rem .9rem; text-align: center; color: var(--dim); font-size: .88rem; }
 
-  footer { color: var(--faint); font-size: .78rem; }
-  footer code { font-family: var(--font-mono); font-size: .95em; color: var(--dim); }
 </style>
 
 <div class="app">
@@ -350,6 +349,7 @@
       <div class="slot-body">
         <div class="slot-name" id="nameA">drop a file here</div>
         <div class="slot-meta" id="metaA">or pick one</div>
+        <div class="slot-warn" id="warnA" hidden></div>
       </div>
       <label class="filebtn">Browse<input type="file" id="fileA" accept=".txt,.tdump,.dump,.log,text/plain"></label>
     </div>
@@ -358,6 +358,7 @@
       <div class="slot-body">
         <div class="slot-name" id="nameB">for before/after comparison</div>
         <div class="slot-meta" id="metaB">optional</div>
+        <div class="slot-warn" id="warnB" hidden></div>
       </div>
       <label class="filebtn">Browse<input type="file" id="fileB" accept=".txt,.tdump,.dump,.log,text/plain"></label>
     </div>
@@ -374,11 +375,6 @@
   <div class="panel" id="panel">
     <div class="empty">Load a dump to start.</div>
   </div>
-
-  <footer>
-    Supports both formats: <code>"name" - Thread t@N</code> and
-    <code>jstack</code> (<code>"name" #N ... tid=0x... nid=0x...</code>).
-  </footer>
 
 </div>
 
@@ -470,7 +466,10 @@
   // ------------------------------------------------------------------ parsing
 
   var RE_HEAD_A = /^"(.*)"\s+-\s+Thread\s+t@(\d+)/;
-  var RE_HEAD_B = /^"(.*)"\s+(?:#(\d+)\s+)?(?:daemon\s+)?(?:prio=|os_prio=|tid=|nid=|cpu=)/;
+  // JetBrains Runtime adds an [<os thread id>] after #<n>; stock HotSpot never does. Without
+  // the optional group the whole header fails to match and those threads vanish in silence —
+  // it cost 143 of 162 threads on an IntelliJ dump.
+  var RE_HEAD_B = /^"(.*)"\s+(?:#(\d+)\s+)?(?:\[\d+\]\s+)?(?:daemon\s+)?(?:prio=|os_prio=|tid=|nid=|cpu=)/;
   var RE_STATE  = /java\.lang\.Thread\.State:\s*([A-Z_]+)/;
   var RE_FRAME  = /^\s+at\s+(.+)$/;
   var RE_OWNED  = /owned by\s+"(.*?)"\s+(?:t@|#)?(\d+)/;
@@ -486,16 +485,25 @@
   var RE_DEADLOCK  = /Found (?:one|\d+) Java-level deadlock/i;
   var RE_DL_END    = /Java stack information for the threads listed above/i;
 
+  // JetBrains Runtime appends a Kotlin coroutine tree after the last thread, with no header of
+  // its own — otherwise it becomes thousands of stray "frames" on whichever thread printed last.
+  // Everything from here to EOF is dropped on purpose: a coroutine isn't a java.lang.Thread,
+  // and every view (pools, states, locks) assumes one.
+  var RE_TRAILER = /^-+\s*coroutine dump\s*-+\s*$/i;
+
   function parse(text) {
     var lines = text.split(/\r?\n/);
     var threads = [];
     var cur = null;
     var inSync = false;
+    var unknownHeaders = 0;
 
     function push() { if (cur) { threads.push(cur); cur = null; } }
 
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i];
+
+      if (RE_TRAILER.test(line)) { push(); continue; }
 
       if (line.charAt(0) === '"') {
         var m = RE_HEAD_A.exec(line);
@@ -506,7 +514,9 @@
           id = parseInt(m[2], 10);
         } else {
           m = RE_HEAD_B.exec(line);
-          if (!m) continue;
+          // A quoted line matching no header shape is a thread in a format we don't know yet.
+          // Counted so the loss is reported rather than left to be inferred from a low count.
+          if (!m) { unknownHeaders++; continue; }
           name = m[1];
           id = m[2] ? parseInt(m[2], 10) : null;
         }
@@ -570,7 +580,8 @@
     return {
       threads: threads,
       byState: countBy(threads, function (t) { return t.state; }),
-      deadlock: extractDeadlock(lines)
+      deadlock: extractDeadlock(lines),
+      unknownHeaders: unknownHeaders
     };
   }
 
@@ -635,8 +646,18 @@
       t.frames.every(function (f) { return RE_JDK.test(f); });
   }
 
+  // The shared-frame check asks this once per (thread, distinct frame) pair, and each call
+  // re-joined the whole stack: 2000 threads at 500 frames took ~7s here, ~200ms once memoised.
+  // Frames never change after parsing. WeakMap, not a field, because custom rules see these
+  // objects and shouldn't find our bookkeeping in them.
+  var idleCache = new WeakMap();
   function isIdleWorker(t) {
-    return RE_IDLE.test(t.frames.join("\n")) || isInfraIdle(t);
+    var cached = idleCache.get(t);
+    if (cached === undefined) {
+      cached = RE_IDLE.test(t.frames.join("\n")) || isInfraIdle(t);
+      idleCache.set(t, cached);
+    }
+    return cached;
   }
 
   // A real pool is recognised by the executor frame in the stack, not by the name:
@@ -1528,15 +1549,45 @@
     metaEl.textContent = "parsing…";
 
     file.text().then(function (text) {
+      // Past the ~512 MB maximum string length Chrome resolves with "" instead of rejecting,
+      // so without this a 600 MB dump reports a confident "0 threads".
+      if (!text.length && file.size) {
+        metaEl.textContent = "could not read this file";
+        var emptyWarn = document.getElementById("warn" + slot);
+        emptyWarn.textContent = "Read back empty. Over roughly 500 MB the browser cannot hold a " +
+          "file as text — trim the dump to the threads you need, or split it.";
+        emptyWarn.hidden = false;
+        return;
+      }
       var t0 = performance.now();
       var parsed = parse(text);
       var ms = Math.round(performance.now() - t0);
       dumps[slot] = parsed;
-      metaEl.textContent = parsed.threads.length + " threads · " +
+      metaEl.textContent = nThreads(parsed.threads.length) + " · " +
         fileSize(file.size) + " · " + ms + " ms";
+      // Next to the count it contradicts: a half-parsed dump otherwise reads as a healthy small one.
+      var warnEl = document.getElementById("warn" + slot);
+      if (parsed.unknownHeaders) {
+        warnEl.textContent = parsed.unknownHeaders + " more " +
+          (parsed.unknownHeaders === 1 ? "line looks like a thread header" : "lines look like thread headers") +
+          " but the format wasn't recognised — those threads are missing here";
+        warnEl.hidden = false;
+      } else {
+        warnEl.hidden = true;
+      }
       document.getElementById("slot" + slot).classList.add("loaded");
       if (slot === "B") view = "diff";
       renderSummary(); renderTabs(); render();
+    }).catch(function (err) {
+      // Without this the slot sits on "parsing…" forever, never saying why.
+      var msg = String((err && err.message) || err);
+      metaEl.textContent = "could not read this file";
+      var warnEl = document.getElementById("warn" + slot);
+      warnEl.textContent = /invalid string length/i.test(msg)
+        ? "Too large for the browser to hold as text (the ceiling is about 500 MB). " +
+          "Trim it to the threads you care about, or split it."
+        : msg;
+      warnEl.hidden = false;
     });
   }
 
