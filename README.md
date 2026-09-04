@@ -39,6 +39,10 @@ the JVM's own — GC, JIT compiler, VM Thread, Service Thread — are absent fro
 here that is around 20 threads `jstack` shows and the JSON does not. For a GC or JIT question,
 take both.
 
+Size limit: the browser's own maximum string length — about 500 MB in Chrome, higher elsewhere.
+A larger file cannot be read as text at all, and the inspector says so instead of showing zero
+threads.
+
 ## Findings
 
 Most checks are generic: a pool with every worker busy, threads piling up in one frame, several
