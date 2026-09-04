@@ -2,1609 +2,2470 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Thread Dump Inspector</title>
 <style>
-  /* System fonts only — no external requests. The page is meant to be usable on an isolated
-     machine or straight from disk, and a diagnostic tool for internal dumps has no business
-     reaching out to a third-party CDN. */
-  :root {
-    --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-                 "DejaVu Sans Mono", "Liberation Mono", monospace;
-  }
+    /* System fonts only — no external requests. The page is meant to be usable on an isolated
+       machine or straight from disk, and a diagnostic tool for internal dumps has no business
+       reaching out to a third-party CDN. */
+    :root {
+        --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+        "DejaVu Sans Mono", "Liberation Mono", monospace;
+    }
 
-  /* Palette, type and the flat, unrounded shapes come from the yank-run design system.
-     Single dark theme on purpose — the system commits to one world, so there is no
-     light variant to invert into. Every colour is painted explicitly. */
-  :root {
-    --bg:          #0A0E0D;
-    --panel:       #111817;
-    --panel-2:     #182220;
+    /* Palette, type and the flat, unrounded shapes come from the yank-run design system.
+       Single dark theme on purpose — the system commits to one world, so there is no
+       light variant to invert into. Every colour is painted explicitly. */
+    :root {
+        --bg: #0A0E0D;
+        --panel: #111817;
+        --panel-2: #182220;
 
-    --ink:         #CDD5D2;
-    --ink-bright:  #DEE4E2;
-    --ink-soft:    #AEB9B5;
-    --muted:       #99A39F;
-    --dim:         #7A847F;
-    --faint:       #3F4744;
+        --ink: #CDD5D2;
+        --ink-bright: #DEE4E2;
+        --ink-soft: #AEB9B5;
+        --muted: #99A39F;
+        --dim: #7A847F;
+        --faint: #3F4744;
 
-    --rule:        #2A3431;
-    --rule-soft:   #1B2422;
+        --rule: #2A3431;
+        --rule-soft: #1B2422;
 
-    --accent:      #3BAE8C;
-    --accent-deep: #2F9579;
+        --accent: #3BAE8C;
+        --accent-deep: #2F9579;
 
-    /* Thread states reuse the system's status colours: error, pending, success,
-       and a neutral dim for WAITING — nothing is wrong with a parked thread. */
-    --st-blocked:  #D97566;
-    --st-timed:    #D9A566;
-    --st-runnable: #5FC2A4;
-    --st-waiting:  #7A847F;
-  }
+        /* Thread states reuse the system's status colours: error, pending, success,
+           and a neutral dim for WAITING — nothing is wrong with a parked thread. */
+        --st-blocked: #D97566;
+        --st-timed: #D9A566;
+        --st-runnable: #5FC2A4;
+        --st-waiting: #7A847F;
+    }
 
-  * { box-sizing: border-box; border-radius: 0; }
+    * {
+        box-sizing: border-box;
+        border-radius: 0;
+    }
 
-  body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--ink);
-    font-family: var(--font-sans);
-    font-size: 15px;
-    line-height: 1.55;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-  }
+    body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: var(--font-sans);
+        font-size: 15px;
+        line-height: 1.55;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+    }
 
-  /* Ligatures off for every monospaced run: stack traces contain -> => != and must
-     read character-for-character, not as glued glyphs. */
-  code, pre, .m, td.n, th, .state, .f-level, .f-via,
-  .slot-label, .slot-name, .tile .k, .tile .v, input[type=text], textarea {
-    font-variant-ligatures: none;
-    font-feature-settings: "liga" 0, "calt" 0;
-  }
+    /* Ligatures off for every monospaced run: stack traces contain -> => != and must
+       read character-for-character, not as glued glyphs. */
+    code, pre, .m, td.n, th, .state, .f-level, .f-via,
+    .slot-label, .slot-name, .tile .k, .tile .v, input[type=text], textarea {
+        font-variant-ligatures: none;
+        font-feature-settings: "liga" 0, "calt" 0;
+    }
 
-  ::selection { background: var(--accent); color: var(--bg); }
+    ::selection {
+        background: var(--accent);
+        color: var(--bg);
+    }
 
-  ::-webkit-scrollbar { width: 10px; height: 10px; }
-  ::-webkit-scrollbar-track { background: var(--bg); }
-  ::-webkit-scrollbar-thumb { background: var(--rule); }
-  ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+    ::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
+    }
 
-  .app {
-    max-width: 78rem;
-    margin: 0 auto;
-    padding: 2rem 1.25rem 5rem;
-    display: flex;
-    flex-direction: column;
-    gap: 1.25rem;
-  }
+    ::-webkit-scrollbar-track {
+        background: var(--bg);
+    }
 
-  .head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .35rem 1.25rem; }
-  .head h1 {
-    font-family: var(--font-mono);
-    font-size: 1.3rem; font-weight: 700; margin: 0;
-    letter-spacing: -.01em; color: var(--ink-bright);
-  }
-  .head p { margin: 0; color: var(--dim); font-size: .85rem; }
+    ::-webkit-scrollbar-thumb {
+        background: var(--rule);
+    }
 
-  .files { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
-  @media (max-width: 46rem) { .files { grid-template-columns: 1fr; } }
+    ::-webkit-scrollbar-thumb:hover {
+        background: var(--accent);
+    }
 
-  .slot {
-    background: var(--panel);
-    border: 1px dashed var(--rule);
-    padding: .85rem 1rem;
-    display: flex; align-items: center; gap: .8rem;
-    min-height: 4.25rem;
-    transition: border-color .15s, background .15s;
-  }
-  .slot.loaded { border-style: solid; }
-  .slot.over { border-color: var(--accent); background: var(--panel-2); }
+    .app {
+        max-width: 78rem;
+        margin: 0 auto;
+        padding: 2rem 1.25rem 5rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1.25rem;
+    }
 
-  .slot-label {
-    font-family: var(--font-mono);
-    font-size: .66rem; letter-spacing: .1em; text-transform: uppercase;
-    color: var(--faint); flex: none;
-  }
-  .slot-body { flex: 1; min-width: 0; }
-  .slot-name {
-    font-family: var(--font-mono); font-size: .82rem; color: var(--ink);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .slot-meta { color: var(--dim); font-size: .78rem; }
-  .slot-warn { color: var(--st-blocked); font-size: .78rem; margin-top: .15rem; }
+    .head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        gap: .35rem 1.25rem;
+    }
 
-  button, .filebtn {
-    font-family: var(--font-mono); font-size: .78rem; font-weight: 500;
-    background: none; color: var(--ink);
-    border: 1px solid var(--rule);
-    padding: .34rem .7rem; cursor: pointer;
-    transition: color .12s, border-color .12s;
-  }
-  button:hover, .filebtn:hover { border-color: var(--accent); color: var(--accent); }
-  button:focus-visible, .filebtn:focus-visible, .tab:focus-visible, input:focus-visible {
-    outline: 1px solid var(--accent); outline-offset: 2px;
-  }
-  input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+    .head h1 {
+        font-family: var(--font-mono);
+        font-size: 1.3rem;
+        font-weight: 700;
+        margin: 0;
+        letter-spacing: -.01em;
+        color: var(--ink-bright);
+    }
 
-  .summary { display: flex; flex-direction: column; gap: .8rem; }
-  .tiles { display: flex; flex-wrap: wrap; gap: .6rem; }
-  .tile {
-    background: var(--panel); border: 1px solid var(--rule);
-    padding: .6rem .9rem; min-width: 8rem;
-  }
-  .tile .k {
-    font-family: var(--font-mono);
-    font-size: .64rem; letter-spacing: .09em; text-transform: uppercase; color: var(--faint);
-  }
-  .tile .v {
-    font-family: var(--font-mono); font-weight: 700; color: var(--ink-bright);
-    font-size: 1.4rem; font-variant-numeric: tabular-nums; line-height: 1.25;
-  }
+    .head p {
+        margin: 0;
+        color: var(--dim);
+        font-size: .85rem;
+    }
 
-  .statebar { display: flex; height: 10px; overflow: hidden; border: 1px solid var(--rule); }
-  .statebar div { height: 100%; }
+    .files {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: .75rem;
+    }
 
-  .legend {
-    display: flex; flex-wrap: wrap; gap: .3rem 1.1rem;
-    font-family: var(--font-mono); font-size: .72rem; color: var(--muted);
-  }
-  .legend span { display: inline-flex; align-items: center; gap: .38rem; }
-  .dot { width: 8px; height: 8px; flex: none; }
+    @media (max-width: 46rem) {
+        .files {
+            grid-template-columns: 1fr;
+        }
+    }
 
-  .tabs { display: flex; flex-wrap: wrap; gap: 0; border-bottom: 1px solid var(--rule); }
-  .tab {
-    border: none; border-bottom: 2px solid transparent;
-    padding: .5rem .8rem; color: var(--dim);
-    font-family: var(--font-sans); font-size: .86rem;
-  }
-  .tab:hover { color: var(--ink); border-color: var(--rule); }
-  .tab[aria-selected="true"] { color: var(--accent); border-color: var(--accent); font-weight: 500; }
+    .slot {
+        background: var(--panel);
+        border: 1px dashed var(--rule);
+        padding: .85rem 1rem;
+        display: flex;
+        align-items: center;
+        gap: .8rem;
+        min-height: 4.25rem;
+        transition: border-color .15s, background .15s;
+    }
 
-  .panel { background: var(--panel); border: 1px solid var(--rule); overflow: hidden; }
-  .panel-top {
-    display: flex; flex-wrap: wrap; gap: .6rem; align-items: center;
-    padding: .7rem .9rem; border-bottom: 1px solid var(--rule); background: var(--panel-2);
-  }
-  .hint { color: var(--dim); font-size: .8rem; margin: 0; }
+    .slot.loaded {
+        border-style: solid;
+    }
 
-  input[type=text] {
-    font-family: var(--font-mono); font-size: .8rem;
-    background: var(--bg); color: var(--ink);
-    border: 1px solid var(--rule); padding: .34rem .6rem;
-    flex: 1; min-width: 12rem;
-  }
-  input[type=text]::placeholder { color: var(--faint); }
+    .slot.over {
+        border-color: var(--accent);
+        background: var(--panel-2);
+    }
 
-  .scroll { overflow-x: auto; }
-  table { border-collapse: collapse; width: 100%; font-size: .85rem; }
-  th {
-    text-align: left; font-family: var(--font-mono); font-weight: 500;
-    font-size: .64rem; letter-spacing: .09em; text-transform: uppercase; color: var(--faint);
-    padding: .55rem .9rem; border-bottom: 1px solid var(--rule); white-space: nowrap;
-  }
-  th.sortable { cursor: pointer; user-select: none; }
-  th.sortable:hover { color: var(--accent); }
-  td { padding: .42rem .9rem; border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
-  tr:last-child td { border-bottom: none; }
-  td.n {
-    font-family: var(--font-mono); font-variant-numeric: tabular-nums;
-    text-align: right; white-space: nowrap; color: var(--ink-bright);
-  }
-  td.m { font-family: var(--font-mono); word-break: break-all; color: var(--ink-soft); }
-  tr.clickable { cursor: pointer; }
-  tr.clickable:hover td { background: var(--panel-2); }
+    .slot-label {
+        font-family: var(--font-mono);
+        font-size: .66rem;
+        letter-spacing: .1em;
+        text-transform: uppercase;
+        color: var(--faint);
+        flex: none;
+    }
 
-  .state {
-    /* inline-block, not inline: an inline box ignores its own padding and border when the
-       line box is measured, so wrapped chips climb on top of each other. */
-    display: inline-block;
-    font-family: var(--font-mono); font-size: .68rem;
-    padding: .1rem .4rem; white-space: nowrap;
-    border: 1px solid currentColor;
-    color: var(--muted);            /* default for states we have no opinion about */
-  }
-  .states { display: flex; flex-wrap: wrap; gap: .25rem; }
-  .s-BLOCKED { color: var(--st-blocked); }
-  .s-RUNNABLE { color: var(--st-runnable); }
-  .s-WAITING { color: var(--st-waiting); }
-  .s-TIMED_WAITING { color: var(--st-timed); }
-  .s-UNKNOWN { color: var(--faint); }
+    .slot-body {
+        flex: 1;
+        min-width: 0;
+    }
 
-  .bar { height: 6px; background: var(--accent-deep); min-width: 2px; }
-  .bar-alert { background: var(--st-blocked); }
+    .slot-name {
+        font-family: var(--font-mono);
+        font-size: .82rem;
+        color: var(--ink);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
 
-  .findings { display: flex; flex-direction: column; }
-  .finding { padding: 1rem 1.1rem; border-bottom: 1px solid var(--rule-soft); border-left: 2px solid var(--rule); }
-  .finding:last-child { border-bottom: none; }
-  .f-alert { border-left-color: var(--st-blocked); }
-  .f-warn  { border-left-color: var(--st-timed); }
-  .f-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem .7rem; }
-  .f-level {
-    font-family: var(--font-mono); font-size: .62rem;
-    letter-spacing: .1em; text-transform: uppercase;
-  }
-  .f-alert .f-level { color: var(--st-blocked); }
-  .f-warn  .f-level { color: var(--st-timed); }
-  .f-title {
-    font-family: var(--font-mono); font-weight: 700;
-    font-size: .95rem; color: var(--ink-bright);
-  }
-  .f-via {
-    font-family: var(--font-mono); font-size: .62rem;
-    color: var(--faint); border: 1px solid var(--rule);
-    padding: .05rem .35rem; white-space: nowrap;
-  }
-  .f-text { margin: .35rem 0 .6rem; color: var(--ink-soft); font-size: .88rem; max-width: 52rem; }
-  .f-toggle { font-size: .74rem; }
+    .slot-meta {
+        color: var(--dim);
+        font-size: .78rem;
+    }
 
-  .sub {
-    background: var(--bg);
-    border-left: 2px solid var(--accent-deep);
-    border-top: 1px solid var(--rule);
-    border-bottom: 1px solid var(--rule);
-  }
-  .sub th { background: var(--bg); font-size: .6rem; padding: .4rem .9rem; }
-  .sub td { padding: .34rem .9rem; }
-  .sub .stack { background: var(--panel); }
+    .slot-warn {
+        color: var(--st-blocked);
+        font-size: .78rem;
+        margin-top: .15rem;
+    }
 
-  .stack {
-    background: var(--bg); border-top: 1px solid var(--rule);
-    padding: .6rem .9rem; font-family: var(--font-mono);
-    font-size: .73rem; line-height: 1.6; color: var(--ink-soft);
-    white-space: pre; overflow-x: auto; margin: 0;
-  }
-  .stack .lock { color: var(--st-blocked); }
+    button, .filebtn {
+        font-family: var(--font-mono);
+        font-size: .78rem;
+        font-weight: 500;
+        background: none;
+        color: var(--ink);
+        border: 1px solid var(--rule);
+        padding: .34rem .7rem;
+        cursor: pointer;
+        transition: color .12s, border-color .12s;
+    }
 
-  /* td.n also sets a colour and outranks a bare class selector — these have to be
-     at least as specific or the deltas silently render in the default ink. */
-  .delta-up, td.n.delta-up { color: var(--st-blocked); }
-  .delta-down, td.n.delta-down { color: var(--st-runnable); }
+    button:hover, .filebtn:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+    }
 
-  .stateref { border-top: 1px solid var(--rule); background: var(--panel-2); }
-  .stateref-head {
-    font-family: var(--font-mono); font-size: .62rem;
-    letter-spacing: .1em; text-transform: uppercase; color: var(--faint);
-    padding: .7rem .9rem .35rem;
-  }
-  .stateref td { border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
-  .stateref tr:last-child td { border-bottom: none; }
-  .stateref .ref-what { color: var(--ink-soft); font-size: .84rem; }
-  .stateref .ref-note { color: var(--dim); font-size: .82rem; }
-  .stateref .state { cursor: default; }
+    button:focus-visible, .filebtn:focus-visible, .tab:focus-visible, input:focus-visible {
+        outline: 1px solid var(--accent);
+        outline-offset: 2px;
+    }
 
-  .rules-box { border-top: 1px solid var(--rule); background: var(--panel-2); padding: .7rem .9rem .9rem; }
-  .rules-box summary {
-    font-family: var(--font-mono); font-size: .78rem; font-weight: 500;
-    cursor: pointer; color: var(--ink); user-select: none;
-  }
-  .rules-box summary:hover { color: var(--accent); }
-  .rules-box .hint { margin: .6rem 0 .8rem; max-width: 52rem; }
-  .rules-box .hint code { color: var(--ink-soft); }
-  .rules-list { display: flex; flex-direction: column; gap: .3rem; margin-bottom: .6rem; }
-  .rule-row {
-    display: flex; align-items: center; justify-content: space-between; gap: .6rem;
-    padding: .4rem .6rem; background: var(--panel); border: 1px solid var(--rule-soft);
-  }
-  .rule-toggle { display: flex; align-items: center; gap: .5rem; font-size: .84rem; color: var(--ink); }
-  .rule-actions { display: flex; gap: .4rem; flex: none; }
-  .rule-actions button { font-size: .72rem; padding: .22rem .55rem; }
-  .rule-form {
-    margin-top: .6rem; padding: .7rem; background: var(--bg); border: 1px dashed var(--rule);
-    display: flex; flex-direction: column; gap: .5rem;
-  }
-  .rule-form[hidden] { display: none; } /* a class selector's display beats the UA [hidden] rule otherwise */
-  .rule-form textarea {
-    font-family: var(--font-mono); font-size: .78rem; line-height: 1.5;
-    background: var(--panel); color: var(--ink);
-    border: 1px solid var(--rule); padding: .5rem .6rem; resize: vertical;
-  }
-  .rule-form textarea::placeholder { color: var(--faint); }
-  .rule-form-actions { display: flex; gap: .5rem; align-items: center; }
-  .rule-error { color: var(--st-blocked); font-size: .8rem; margin: 0; }
+    input[type=file] {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        opacity: 0;
+    }
 
-  /* Reference for the rule author. Collapsed by default: it is long, and it is only needed
-     the first few times — after that it is in the way of the textarea. */
-  .rule-doc { border: 1px solid var(--rule-soft); background: var(--panel); }
-  .rule-doc summary {
-    padding: .45rem .6rem; cursor: pointer; user-select: none;
-    font-family: var(--font-mono); font-size: .74rem; color: var(--dim);
-  }
-  .rule-doc summary:hover { color: var(--accent); }
-  .rule-doc-body { padding: .1rem .7rem .8rem; }
-  .rule-doc p { margin: .45rem 0; font-size: .82rem; color: var(--ink-soft); max-width: 52rem; }
-  .rule-doc h4 {
-    margin: .9rem 0 .25rem; font-weight: 500;
-    font-family: var(--font-mono); font-size: .6rem;
-    letter-spacing: .1em; text-transform: uppercase; color: var(--faint);
-  }
-  .rule-doc table { font-size: .8rem; }
-  .rule-doc td { padding: .28rem .5rem .28rem 0; border-bottom: 1px solid var(--rule-soft); }
-  .rule-doc tr:last-child td { border-bottom: none; }
-  .rule-doc td:first-child {
-    font-family: var(--font-mono); color: var(--ink-bright);
-    white-space: nowrap; vertical-align: top; width: 1%; padding-right: 1rem;
-  }
-  .rule-doc td:last-child { color: var(--ink-soft); }
-  .rule-doc code { font-family: var(--font-mono); font-size: .95em; color: var(--ink); }
-  .rule-doc pre {
-    margin: .35rem 0 0; padding: .55rem .65rem;
-    background: var(--bg); border: 1px solid var(--rule-soft);
-    font-family: var(--font-mono); font-size: .74rem; line-height: 1.6;
-    color: var(--ink-soft); white-space: pre; overflow-x: auto;
-  }
+    .summary {
+        display: flex;
+        flex-direction: column;
+        gap: .8rem;
+    }
 
-  .empty { padding: 2.5rem .9rem; text-align: center; color: var(--dim); font-size: .88rem; }
+    .tiles {
+        display: flex;
+        flex-wrap: wrap;
+        gap: .6rem;
+    }
+
+    .tile {
+        background: var(--panel);
+        border: 1px solid var(--rule);
+        padding: .6rem .9rem;
+        min-width: 8rem;
+    }
+
+    .tile .k {
+        font-family: var(--font-mono);
+        font-size: .64rem;
+        letter-spacing: .09em;
+        text-transform: uppercase;
+        color: var(--faint);
+    }
+
+    .tile .v {
+        font-family: var(--font-mono);
+        font-weight: 700;
+        color: var(--ink-bright);
+        font-size: 1.4rem;
+        font-variant-numeric: tabular-nums;
+        line-height: 1.25;
+    }
+
+    .statebar {
+        display: flex;
+        height: 10px;
+        overflow: hidden;
+        border: 1px solid var(--rule);
+    }
+
+    .statebar div {
+        height: 100%;
+    }
+
+    .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: .3rem 1.1rem;
+        font-family: var(--font-mono);
+        font-size: .72rem;
+        color: var(--muted);
+    }
+
+    .legend span {
+        display: inline-flex;
+        align-items: center;
+        gap: .38rem;
+    }
+
+    .dot {
+        width: 8px;
+        height: 8px;
+        flex: none;
+    }
+
+    .tabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0;
+        border-bottom: 1px solid var(--rule);
+    }
+
+    .tab {
+        border: none;
+        border-bottom: 2px solid transparent;
+        padding: .5rem .8rem;
+        color: var(--dim);
+        font-family: var(--font-sans);
+        font-size: .86rem;
+    }
+
+    .tab:hover {
+        color: var(--ink);
+        border-color: var(--rule);
+    }
+
+    .tab[aria-selected="true"] {
+        color: var(--accent);
+        border-color: var(--accent);
+        font-weight: 500;
+    }
+
+    .panel {
+        background: var(--panel);
+        border: 1px solid var(--rule);
+        overflow: hidden;
+    }
+
+    .panel-top {
+        display: flex;
+        flex-wrap: wrap;
+        gap: .6rem;
+        align-items: center;
+        padding: .7rem .9rem;
+        border-bottom: 1px solid var(--rule);
+        background: var(--panel-2);
+    }
+
+    .hint {
+        color: var(--dim);
+        font-size: .8rem;
+        margin: 0;
+    }
+
+    input[type=text] {
+        font-family: var(--font-mono);
+        font-size: .8rem;
+        background: var(--bg);
+        color: var(--ink);
+        border: 1px solid var(--rule);
+        padding: .34rem .6rem;
+        flex: 1;
+        min-width: 12rem;
+    }
+
+    input[type=text]::placeholder {
+        color: var(--faint);
+    }
+
+    .scroll {
+        overflow-x: auto;
+    }
+
+    table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: .85rem;
+    }
+
+    th {
+        text-align: left;
+        font-family: var(--font-mono);
+        font-weight: 500;
+        font-size: .64rem;
+        letter-spacing: .09em;
+        text-transform: uppercase;
+        color: var(--faint);
+        padding: .55rem .9rem;
+        border-bottom: 1px solid var(--rule);
+        white-space: nowrap;
+    }
+
+    th.sortable {
+        cursor: pointer;
+        user-select: none;
+    }
+
+    th.sortable:hover {
+        color: var(--accent);
+    }
+
+    td {
+        padding: .42rem .9rem;
+        border-bottom: 1px solid var(--rule-soft);
+        vertical-align: top;
+    }
+
+    tr:last-child td {
+        border-bottom: none;
+    }
+
+    td.n {
+        font-family: var(--font-mono);
+        font-variant-numeric: tabular-nums;
+        text-align: right;
+        white-space: nowrap;
+        color: var(--ink-bright);
+    }
+
+    td.m {
+        font-family: var(--font-mono);
+        word-break: break-all;
+        color: var(--ink-soft);
+    }
+
+    tr.clickable {
+        cursor: pointer;
+    }
+
+    tr.clickable:hover td {
+        background: var(--panel-2);
+    }
+
+    .state {
+        /* inline-block, not inline: an inline box ignores its own padding and border when the
+           line box is measured, so wrapped chips climb on top of each other. */
+        display: inline-block;
+        font-family: var(--font-mono);
+        font-size: .68rem;
+        padding: .1rem .4rem;
+        white-space: nowrap;
+        border: 1px solid currentColor;
+        color: var(--muted); /* default for states we have no opinion about */
+    }
+
+    .states {
+        display: flex;
+        flex-wrap: wrap;
+        gap: .25rem;
+    }
+
+    .kind {
+        font-family: var(--font-mono);
+        font-size: .68rem;
+        color: var(--dim);
+        white-space: nowrap;
+    }
+
+    .kind-virtual {
+        color: var(--accent);
+    }
+
+    .s-BLOCKED {
+        color: var(--st-blocked);
+    }
+
+    .s-RUNNABLE {
+        color: var(--st-runnable);
+    }
+
+    .s-WAITING {
+        color: var(--st-waiting);
+    }
+
+    .s-TIMED_WAITING {
+        color: var(--st-timed);
+    }
+
+    .s-UNKNOWN {
+        color: var(--faint);
+    }
+
+    .bar {
+        height: 6px;
+        background: var(--accent-deep);
+        min-width: 2px;
+    }
+
+    .bar-alert {
+        background: var(--st-blocked);
+    }
+
+    .findings {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .finding {
+        padding: 1rem 1.1rem;
+        border-bottom: 1px solid var(--rule-soft);
+        border-left: 2px solid var(--rule);
+    }
+
+    .finding:last-child {
+        border-bottom: none;
+    }
+
+    .f-alert {
+        border-left-color: var(--st-blocked);
+    }
+
+    .f-warn {
+        border-left-color: var(--st-timed);
+    }
+
+    .f-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: .3rem .7rem;
+    }
+
+    .f-level {
+        font-family: var(--font-mono);
+        font-size: .62rem;
+        letter-spacing: .1em;
+        text-transform: uppercase;
+    }
+
+    .f-alert .f-level {
+        color: var(--st-blocked);
+    }
+
+    .f-warn .f-level {
+        color: var(--st-timed);
+    }
+
+    .f-title {
+        font-family: var(--font-mono);
+        font-weight: 700;
+        font-size: .95rem;
+        color: var(--ink-bright);
+    }
+
+    .f-via {
+        font-family: var(--font-mono);
+        font-size: .62rem;
+        color: var(--faint);
+        border: 1px solid var(--rule);
+        padding: .05rem .35rem;
+        white-space: nowrap;
+    }
+
+    .f-text {
+        margin: .35rem 0 .6rem;
+        color: var(--ink-soft);
+        font-size: .88rem;
+        max-width: 52rem;
+    }
+
+    .f-toggle {
+        font-size: .74rem;
+    }
+
+    .sub {
+        background: var(--bg);
+        border-left: 2px solid var(--accent-deep);
+        border-top: 1px solid var(--rule);
+        border-bottom: 1px solid var(--rule);
+    }
+
+    .sub th {
+        background: var(--bg);
+        font-size: .6rem;
+        padding: .4rem .9rem;
+    }
+
+    .sub td {
+        padding: .34rem .9rem;
+    }
+
+    .sub .stack {
+        background: var(--panel);
+    }
+
+    .stack {
+        background: var(--bg);
+        border-top: 1px solid var(--rule);
+        padding: .6rem .9rem;
+        font-family: var(--font-mono);
+        font-size: .73rem;
+        line-height: 1.6;
+        color: var(--ink-soft);
+        white-space: pre;
+        overflow-x: auto;
+        margin: 0;
+    }
+
+    .stack .lock {
+        color: var(--st-blocked);
+    }
+
+    /* td.n also sets a colour and outranks a bare class selector — these have to be
+       at least as specific or the deltas silently render in the default ink. */
+    .delta-up, td.n.delta-up {
+        color: var(--st-blocked);
+    }
+
+    .delta-down, td.n.delta-down {
+        color: var(--st-runnable);
+    }
+
+    .stateref {
+        border-top: 1px solid var(--rule);
+        background: var(--panel-2);
+    }
+
+    .stateref-head {
+        font-family: var(--font-mono);
+        font-size: .62rem;
+        letter-spacing: .1em;
+        text-transform: uppercase;
+        color: var(--faint);
+        padding: .7rem .9rem .35rem;
+    }
+
+    .stateref td {
+        border-bottom: 1px solid var(--rule-soft);
+        vertical-align: top;
+    }
+
+    .stateref tr:last-child td {
+        border-bottom: none;
+    }
+
+    .stateref .ref-what {
+        color: var(--ink-soft);
+        font-size: .84rem;
+    }
+
+    .stateref .ref-note {
+        color: var(--dim);
+        font-size: .82rem;
+    }
+
+    .stateref .state {
+        cursor: default;
+    }
+
+    .rules-box {
+        border-top: 1px solid var(--rule);
+        background: var(--panel-2);
+        padding: .7rem .9rem .9rem;
+    }
+
+    .rules-box summary {
+        font-family: var(--font-mono);
+        font-size: .78rem;
+        font-weight: 500;
+        cursor: pointer;
+        color: var(--ink);
+        user-select: none;
+    }
+
+    .rules-box summary:hover {
+        color: var(--accent);
+    }
+
+    .rules-box .hint {
+        margin: .6rem 0 .8rem;
+        max-width: 52rem;
+    }
+
+    .rules-box .hint code {
+        color: var(--ink-soft);
+    }
+
+    .rules-list {
+        display: flex;
+        flex-direction: column;
+        gap: .3rem;
+        margin-bottom: .6rem;
+    }
+
+    .rule-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: .6rem;
+        padding: .4rem .6rem;
+        background: var(--panel);
+        border: 1px solid var(--rule-soft);
+    }
+
+    .rule-toggle {
+        display: flex;
+        align-items: center;
+        gap: .5rem;
+        font-size: .84rem;
+        color: var(--ink);
+    }
+
+    .rule-actions {
+        display: flex;
+        gap: .4rem;
+        flex: none;
+    }
+
+    .rule-actions button {
+        font-size: .72rem;
+        padding: .22rem .55rem;
+    }
+
+    .rule-form {
+        margin-top: .6rem;
+        padding: .7rem;
+        background: var(--bg);
+        border: 1px dashed var(--rule);
+        display: flex;
+        flex-direction: column;
+        gap: .5rem;
+    }
+
+    .rule-form[hidden] {
+        display: none;
+    }
+
+    /* a class selector's display beats the UA [hidden] rule otherwise */
+    .rule-form textarea {
+        font-family: var(--font-mono);
+        font-size: .78rem;
+        line-height: 1.5;
+        background: var(--panel);
+        color: var(--ink);
+        border: 1px solid var(--rule);
+        padding: .5rem .6rem;
+        resize: vertical;
+    }
+
+    .rule-form textarea::placeholder {
+        color: var(--faint);
+    }
+
+    .rule-form-actions {
+        display: flex;
+        gap: .5rem;
+        align-items: center;
+    }
+
+    .rule-error {
+        color: var(--st-blocked);
+        font-size: .8rem;
+        margin: 0;
+    }
+
+    /* Reference for the rule author. Collapsed by default: it is long, and it is only needed
+       the first few times — after that it is in the way of the textarea. */
+    .rule-doc {
+        border: 1px solid var(--rule-soft);
+        background: var(--panel);
+    }
+
+    .rule-doc summary {
+        padding: .45rem .6rem;
+        cursor: pointer;
+        user-select: none;
+        font-family: var(--font-mono);
+        font-size: .74rem;
+        color: var(--dim);
+    }
+
+    .rule-doc summary:hover {
+        color: var(--accent);
+    }
+
+    .rule-doc-body {
+        padding: .1rem .7rem .8rem;
+    }
+
+    .rule-doc p {
+        margin: .45rem 0;
+        font-size: .82rem;
+        color: var(--ink-soft);
+        max-width: 52rem;
+    }
+
+    .rule-doc h4 {
+        margin: .9rem 0 .25rem;
+        font-weight: 500;
+        font-family: var(--font-mono);
+        font-size: .6rem;
+        letter-spacing: .1em;
+        text-transform: uppercase;
+        color: var(--faint);
+    }
+
+    .rule-doc table {
+        font-size: .8rem;
+    }
+
+    .rule-doc td {
+        padding: .28rem .5rem .28rem 0;
+        border-bottom: 1px solid var(--rule-soft);
+    }
+
+    .rule-doc tr:last-child td {
+        border-bottom: none;
+    }
+
+    .rule-doc td:first-child {
+        font-family: var(--font-mono);
+        color: var(--ink-bright);
+        white-space: nowrap;
+        vertical-align: top;
+        width: 1%;
+        padding-right: 1rem;
+    }
+
+    .rule-doc td:last-child {
+        color: var(--ink-soft);
+    }
+
+    .rule-doc code {
+        font-family: var(--font-mono);
+        font-size: .95em;
+        color: var(--ink);
+    }
+
+    .rule-doc pre {
+        margin: .35rem 0 0;
+        padding: .55rem .65rem;
+        background: var(--bg);
+        border: 1px solid var(--rule-soft);
+        font-family: var(--font-mono);
+        font-size: .74rem;
+        line-height: 1.6;
+        color: var(--ink-soft);
+        white-space: pre;
+        overflow-x: auto;
+    }
+
+    .empty {
+        padding: 2.5rem .9rem;
+        text-align: center;
+        color: var(--dim);
+        font-size: .88rem;
+    }
+
+    /*Wayfinding, not a call to action — quiet until pointed at. A plain link, deliberately:
+    an icon or logo pulled from the other site would be the external request this page
+    promises never to make.*/
+    footer {
+        font-family: var(--font-mono);
+        font-size: .74rem;
+    }
+
+    footer a {
+        color: var(--dim);
+        text-decoration: none;
+    }
+
+    footer a:hover {
+        color: var(--accent);
+    }
 
 </style>
 
 <div class="app">
 
-  <header class="head">
-    <h1>Thread Dump Inspector</h1>
-    <p>Parsed in the browser. The file is never uploaded.</p>
-  </header>
+    <header class="head">
+        <h1>Thread Dump Inspector</h1>
+        <p>Parsed in the browser. The file is never uploaded.</p>
+    </header>
 
-  <div class="files">
-    <div class="slot" id="slotA" data-slot="A">
-      <span class="slot-label">Dump&nbsp;A</span>
-      <div class="slot-body">
-        <div class="slot-name" id="nameA">drop a file here</div>
-        <div class="slot-meta" id="metaA">or pick one</div>
-        <div class="slot-warn" id="warnA" hidden></div>
-      </div>
-      <label class="filebtn">Browse<input type="file" id="fileA" accept=".txt,.tdump,.dump,.log,text/plain"></label>
+    <div class="files">
+        <div class="slot" id="slotA" data-slot="A">
+            <span class="slot-label">Dump&nbsp;A</span>
+            <div class="slot-body">
+                <div class="slot-name" id="nameA">drop a file here</div>
+                <div class="slot-meta" id="metaA">or pick one</div>
+                <div class="slot-warn" id="warnA" hidden></div>
+            </div>
+            <label class="filebtn">Browse<input type="file" id="fileA"
+                                                accept=".txt,.tdump,.dump,.log,.json,text/plain,application/json"></label>
+        </div>
+        <div class="slot" id="slotB" data-slot="B">
+            <span class="slot-label">Dump&nbsp;B</span>
+            <div class="slot-body">
+                <div class="slot-name" id="nameB">for before/after comparison</div>
+                <div class="slot-meta" id="metaB">optional</div>
+                <div class="slot-warn" id="warnB" hidden></div>
+            </div>
+            <label class="filebtn">Browse<input type="file" id="fileB"
+                                                accept=".txt,.tdump,.dump,.log,.json,text/plain,application/json"></label>
+        </div>
     </div>
-    <div class="slot" id="slotB" data-slot="B">
-      <span class="slot-label">Dump&nbsp;B</span>
-      <div class="slot-body">
-        <div class="slot-name" id="nameB">for before/after comparison</div>
-        <div class="slot-meta" id="metaB">optional</div>
-        <div class="slot-warn" id="warnB" hidden></div>
-      </div>
-      <label class="filebtn">Browse<input type="file" id="fileB" accept=".txt,.tdump,.dump,.log,text/plain"></label>
+
+    <div class="summary" id="summary" hidden>
+        <div class="tiles" id="tiles"></div>
+        <div class="statebar" id="statebar"></div>
+        <div class="legend" id="legend"></div>
     </div>
-  </div>
 
-  <div class="summary" id="summary" hidden>
-    <div class="tiles" id="tiles"></div>
-    <div class="statebar" id="statebar"></div>
-    <div class="legend" id="legend"></div>
-  </div>
+    <div class="tabs" id="tabs" role="tablist" hidden></div>
 
-  <div class="tabs" id="tabs" role="tablist" hidden></div>
+    <div class="panel" id="panel">
+        <div class="empty">Load a dump to start.</div>
+    </div>
 
-  <div class="panel" id="panel">
-    <div class="empty">Load a dump to start.</div>
-  </div>
+    <footer><a href="https://yank.run">&larr; yank.run</a></footer>
 
 </div>
 
 <script>
-(function () {
-  "use strict";
+  (function () {
+    "use strict";
 
-  // Preferred order for the states we know; anything else the dump contains is appended,
-  // so an unexpected value shows up instead of silently vanishing from the bar and legend.
-  var STATE_ORDER = ["BLOCKED", "RUNNABLE", "TIMED_WAITING", "WAITING", "NEW", "TERMINATED", "UNKNOWN"];
+    /*Preferred order for the states we know; anything else the dump contains is appended,
+     so an unexpected value shows up instead of silently vanishing from the bar and legend.
+     */
+    var STATE_ORDER = ["BLOCKED", "RUNNABLE", "TIMED_WAITING", "WAITING", "NEW", "TERMINATED", "UNKNOWN"];
 
-  // What each state means, and the thing about it that is easy to get wrong.
-  var STATE_DOC = {
-    BLOCKED: {
-      what: "Waiting to enter a synchronized block or method.",
-      note: "Someone else holds the monitor. Find the holder — the waiters are only a symptom."
-    },
-    RUNNABLE: {
-      what: "Eligible to run, as far as the JVM can tell.",
-      note: "Not proof of CPU use. A thread blocked in a native call — socketRead0, epollWait — " +
-            "is also RUNNABLE, because the JVM cannot see past the native boundary."
-    },
-    TIMED_WAITING: {
-      what: "Parked with a deadline: sleep(), wait(ms), parkNanos(), poll(timeout).",
-      note: "Wakes on its own even if nothing happens, so a stuck thread here can look alive."
-    },
-    WAITING: {
-      what: "Parked indefinitely: Object.wait(), Thread.join(), LockSupport.park().",
-      note: "Only another thread can wake it. Nothing here times out by itself."
-    },
-    NEW: {
-      what: "Created but never started.",
-      note: "Rare in a dump — a thread usually appears only once it is running."
-    },
-    TERMINATED: {
-      what: "Finished executing.",
-      note: "Rare in a dump for the same reason."
-    },
-    UNKNOWN: {
-      what: "This tool's label for a thread with no Thread.State line.",
-      note: "JVM-internal threads — VM Thread, GC task thread, VM Periodic Task Thread — are not " +
-            "Java threads and have no state to report. Not an error."
-    }
-  };
-
-  function statesPresent(d) {
-    var known = STATE_ORDER.filter(function (s) { return d.byState[s]; });
-    var extra = Object.keys(d.byState).filter(function (s) { return STATE_ORDER.indexOf(s) < 0; }).sort();
-    return known.concat(extra);
-  }
-  var dumps = { A: null, B: null };
-  var view = "findings";
-  var sortDesc = true;
-  var searchQuery = "";
-  var rulesBoxOpen = false;
-  var rulesDocOpen = false;
-
-  function esc(s) {
-    return String(s).replace(/[&<>"']/g, function (c) {
-      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
-    });
-  }
-
-  function nThreads(n) { return n + (n === 1 ? " thread" : " threads"); }
-
-  // Byte count from File.size, not text.length — the latter counts UTF-16 units, which
-  // drifts from the real file size once thread names carry non-ASCII. The unit follows the
-  // value so a 30 KB dump does not read as "0.0 MB".
-  function fileSize(bytes) {
-    if (bytes < 1024) return bytes + " B";
-    if (bytes < 1048576) return Math.round(bytes / 1024) + " KB";
-    return (bytes / 1048576).toFixed(1) + " MB";
-  }
-
-  // Collapses a digit run to "N" only if it borders a non-alphanumeric character (or the
-  // start/end of the string) on at least one side. That is what separates a worker index —
-  // "-thread-19", "LauncherServer-121", the octets in "10.233.10.1" — from a digit that is
-  // just part of the name, like the "2" in "a2p-supervisor". Blind /\d+/g would turn the
-  // latter into "aNp-supervisor" and misgroup it.
-  function normalizeName(name) {
-    return name.replace(/\d+/g, function (run, offset, str) {
-      var before = offset > 0 ? str.charAt(offset - 1) : "";
-      var after = offset + run.length < str.length ? str.charAt(offset + run.length) : "";
-      var isBoundary = function (c) { return c === "" || !/[a-zA-Z0-9]/.test(c); };
-      return (isBoundary(before) || isBoundary(after)) ? "N" : run;
-    });
-  }
-
-  // ------------------------------------------------------------------ parsing
-
-  var RE_HEAD_A = /^"(.*)"\s+-\s+Thread\s+t@(\d+)/;
-  // JetBrains Runtime adds an [<os thread id>] after #<n>; stock HotSpot never does. Without
-  // the optional group the whole header fails to match and those threads vanish in silence —
-  // it cost 143 of 162 threads on an IntelliJ dump.
-  var RE_HEAD_B = /^"(.*)"\s+(?:#(\d+)\s+)?(?:\[\d+\]\s+)?(?:daemon\s+)?(?:prio=|os_prio=|tid=|nid=|cpu=)/;
-  var RE_STATE  = /java\.lang\.Thread\.State:\s*([A-Z_]+)/;
-  var RE_FRAME  = /^\s+at\s+(.+)$/;
-  var RE_OWNED  = /owned by\s+"(.*?)"\s+(?:t@|#)?(\d+)/;
-
-  // Two ways a thread can wait for a lock, and two ways to own one.
-  // Monitors (synchronized) name the owner inline; j.u.c locks do not — their owner is only
-  // discoverable through the "Locked ownable synchronizers" section of another thread.
-  var RE_WAIT_LOCK = /waiting to lock\s+<([0-9a-fx]+)>/i;
-  var RE_PARK_FOR  = /parking to wait for\s+<([0-9a-fx]+)>/i;
-  var RE_LOCKED    = /^-\s+locked\s+<([0-9a-fx]+)>/i;
-  var RE_OWNS_SYNC = /^-\s+<([0-9a-fx]+)>\s+\(a\s/i;
-  var RE_SYNC_HEAD = /Locked ownable synchronizers:/i;
-  var RE_DEADLOCK  = /Found (?:one|\d+) Java-level deadlock/i;
-  var RE_DL_END    = /Java stack information for the threads listed above/i;
-
-  // JetBrains Runtime appends a Kotlin coroutine tree after the last thread, with no header of
-  // its own — otherwise it becomes thousands of stray "frames" on whichever thread printed last.
-  // Everything from here to EOF is dropped on purpose: a coroutine isn't a java.lang.Thread,
-  // and every view (pools, states, locks) assumes one.
-  var RE_TRAILER = /^-+\s*coroutine dump\s*-+\s*$/i;
-
-  function parse(text) {
-    var lines = text.split(/\r?\n/);
-    var threads = [];
-    var cur = null;
-    var inSync = false;
-    var unknownHeaders = 0;
-
-    function push() { if (cur) { threads.push(cur); cur = null; } }
-
-    for (var i = 0; i < lines.length; i++) {
-      var line = lines[i];
-
-      if (RE_TRAILER.test(line)) { push(); continue; }
-
-      if (line.charAt(0) === '"') {
-        var m = RE_HEAD_A.exec(line);
-        var id = null;
-        var name;
-        if (m) {
-          name = m[1];
-          id = parseInt(m[2], 10);
-        } else {
-          m = RE_HEAD_B.exec(line);
-          // A quoted line matching no header shape is a thread in a format we don't know yet.
-          // Counted so the loss is reported rather than left to be inferred from a low count.
-          if (!m) { unknownHeaders++; continue; }
-          name = m[1];
-          id = m[2] ? parseInt(m[2], 10) : null;
-        }
-        push();
-        cur = {
-          name: name, id: id, state: "UNKNOWN", frames: [], locks: [],
-          waitsFor: null, waitingOn: null, locksHeld: [], raw: [line]
-        };
-        inSync = false;
-        continue;
+    // What each state means, and the thing about it that is easy to get wrong.
+    var STATE_DOC = {
+      BLOCKED: {
+        what: "Waiting to enter a synchronized block or method.",
+        note: "Someone else holds the monitor. Find the holder — the waiters are only a symptom."
+      },
+      RUNNABLE: {
+        what: "Eligible to run, as far as the JVM can tell.",
+        note: "Not proof of CPU use. A thread blocked in a native call — socketRead0, epollWait — " +
+          "is also RUNNABLE, because the JVM cannot see past the native boundary."
+      },
+      TIMED_WAITING: {
+        what: "Parked with a deadline: sleep(), wait(ms), parkNanos(), poll(timeout).",
+        note: "Wakes on its own even if nothing happens, so a stuck thread here can look alive."
+      },
+      WAITING: {
+        what: "Parked indefinitely: Object.wait(), Thread.join(), LockSupport.park().",
+        note: "Only another thread can wake it. Nothing here times out by itself."
+      },
+      NEW: {
+        what: "Created but never started.",
+        note: "Rare in a dump — a thread usually appears only once it is running."
+      },
+      TERMINATED: {
+        what: "Finished executing.",
+        note: "Rare in a dump for the same reason."
+      },
+      UNKNOWN: {
+        what: "This tool's label for a thread with no Thread.State line.",
+        note: "JVM-internal threads — VM Thread, GC task thread, VM Periodic Task Thread — are not " +
+          "Java threads and have no state to report. Not an error."
       }
-
-      if (!cur) continue;
-      cur.raw.push(line);
-
-      var st = RE_STATE.exec(line);
-      if (st) { cur.state = st[1]; continue; }
-
-      var fr = RE_FRAME.exec(line);
-      if (fr) { cur.frames.push(fr[1]); continue; }
-
-      if (RE_SYNC_HEAD.test(line)) { inSync = true; continue; }
-
-      var t = line.trim();
-      if (t.charAt(0) === "-" && t.length > 1) {
-        cur.locks.push(t);
-
-        var w = RE_WAIT_LOCK.exec(t) || RE_PARK_FOR.exec(t);
-        if (w) cur.waitingOn = w[1];
-
-        var held = RE_LOCKED.exec(t);
-        if (held) cur.locksHeld.push(held[1]);
-        if (inSync) {
-          var own = RE_OWNS_SYNC.exec(t);
-          if (own) cur.locksHeld.push(own[1]);
-        }
-
-        var ow = RE_OWNED.exec(t);
-        if (ow && w) cur.waitsFor = { name: ow[1], id: parseInt(ow[2], 10), lock: w[1] };
-      }
-    }
-    push();
-
-    threads.forEach(function (th) {
-      th.norm = normalizeName(th.name);
-      th.top = th.frames.length ? th.frames[0] : "(no stack)";
-    });
-
-    // Resolve lock owners the dump did not name inline. Covers ReentrantLock and any other
-    // AbstractOwnableSynchronizer, plus monitors on dumps that print "locked" but not "owned by".
-    var owner = Object.create(null);
-    threads.forEach(function (th) {
-      th.locksHeld.forEach(function (id) { if (!owner[id]) owner[id] = th; });
-    });
-    threads.forEach(function (th) {
-      if (th.waitsFor || !th.waitingOn) return;
-      var o = owner[th.waitingOn];
-      if (o && o !== th) th.waitsFor = { name: o.name, id: o.id, lock: th.waitingOn };
-    });
-
-    return {
-      threads: threads,
-      byState: countBy(threads, function (t) { return t.state; }),
-      deadlock: extractDeadlock(lines),
-      unknownHeaders: unknownHeaders
     };
-  }
 
-  // The JVM prints its own deadlock report above the thread list. Keep it verbatim:
-  // re-deriving it from the wait graph is redundant and less reliable.
-  function extractDeadlock(lines) {
-    var start = -1;
-    for (var i = 0; i < lines.length; i++) {
-      if (RE_DEADLOCK.test(lines[i])) { start = i; break; }
+    function statesPresent(d) {
+      var known = STATE_ORDER.filter(function (s) {
+        return d.byState[s];
+      });
+      var extra = Object.keys(d.byState).filter(function (s) {
+        return STATE_ORDER.indexOf(s) < 0;
+      }).sort();
+      return known.concat(extra);
     }
-    if (start < 0) return null;
-    var block = [];
-    for (var j = start; j < lines.length && block.length < 200; j++) {
-      if (j > start && RE_DL_END.test(lines[j])) break;
-      block.push(lines[j]);
+
+    var dumps = {A: null, B: null};
+    var view = "findings";
+    var sortDesc = true;
+    var searchQuery = "";
+    var rulesBoxOpen = false;
+    var rulesDocOpen = false;
+
+    function esc(s) {
+      return String(s).replace(/[&<>"']/g, function (c) {
+        return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c];
+      });
     }
-    return block.join("\n").replace(/\s+$/, "");
-  }
 
-  function countBy(arr, fn) {
-    var m = Object.create(null);
-    arr.forEach(function (x) { var k = fn(x); m[k] = (m[k] || 0) + 1; });
-    return m;
-  }
-
-  function groupBy(arr, fn) {
-    var m = Object.create(null);
-    arr.forEach(function (x) { var k = fn(x); (m[k] || (m[k] = [])).push(x); });
-    return m;
-  }
-
-  function sortedGroups(map) {
-    return Object.keys(map)
-      .map(function (k) { return { key: k, items: map[k] }; })
-      .sort(function (a, b) { return b.items.length - a.items.length || a.key.localeCompare(b.key); });
-  }
-
-  // ------------------------------------------------------------- pools & hints
-
-  // Pool name is the normalized thread name, unchanged. An earlier version stripped a
-  // trailing "-N" as the worker index, which reads well for "spark-job-thread-19" but
-  // truncates anything else ending in a number — "RMI TCP Connection(3)-127.0.0.1" lost
-  // its last IP octet. Naming schemes vary too much to guess which trailing number is an
-  // index, and stripping also merged distinct groups: "foo-N" and "foo-thread-N" both
-  // collapsed to "foo". Labels are longer this way, and they match the dump.
-  function poolOf(t) { return t.norm; }
-
-  // A worker ready to take work: waiting on the task queue, or sitting in an event loop.
-  // An event loop (epoll/kqueue/select) counts as ready — it does not stop the pool.
-  var RE_IDLE = /ThreadPoolExecutor\.getTask|ForkJoinPool\.awaitWork|ForkJoinPool\.scan|DelayedWorkQueue\.take|epollWait|EPollArrayWrapper\.poll|KQueueArrayWrapper|SelectorImpl\.(?:select|doSelect)|SingleThreadEventExecutor/;
-
-  // A blocking socket read looks identical whether the thread waits for the next incoming
-  // request or for the answer to one it sent. What separates them is the rest of the stack:
-  // an RMI/JMX connection handler is JDK frames all the way down, while a client waiting on
-  // a response has the calling code in it. A JDK-only stack blocked in a native call is
-  // infrastructure parked between requests — not application work, so not busy.
-  var RE_JDK = /^(?:java|javax|sun|jdk|com\.sun)\./;
-  var RE_BLOCKED_NATIVE = /Native Method|socketRead0|epollWait|accept0|poll0/;
-  function isInfraIdle(t) {
-    return t.frames.length > 0 &&
-      RE_BLOCKED_NATIVE.test(t.top) &&
-      t.frames.every(function (f) { return RE_JDK.test(f); });
-  }
-
-  // The shared-frame check asks this once per (thread, distinct frame) pair, and each call
-  // re-joined the whole stack: 2000 threads at 500 frames took ~7s here, ~200ms once memoised.
-  // Frames never change after parsing. WeakMap, not a field, because custom rules see these
-  // objects and shouldn't find our bookkeeping in them.
-  var idleCache = new WeakMap();
-  function isIdleWorker(t) {
-    var cached = idleCache.get(t);
-    if (cached === undefined) {
-      cached = RE_IDLE.test(t.frames.join("\n")) || isInfraIdle(t);
-      idleCache.set(t, cached);
+    function nThreads(n) {
+      return n + (n === 1 ? " thread" : " threads");
     }
-    return cached;
-  }
 
-  // A real pool is recognised by the executor frame in the stack, not by the name:
-  // otherwise any group with a number in its name becomes a "pool" (DataStreamer, Thread-N).
-  var RE_WORKER = /ThreadPoolExecutor\.runWorker|ForkJoinWorkerThread\.run|ScheduledThreadPoolExecutor|SingleThreadEventExecutor/;
-  function looksLikePool(items) {
-    return items.some(function (t) { return RE_WORKER.test(t.frames.join("\n")); });
-  }
+    /*Byte count from File.size, not text.length — the latter counts UTF-16 units, which
+     drifts from the real file size once thread names carry non-ASCII. The unit follows the
+     value so a 30 KB dump does not read as "0.0 MB".
+     */
+    function fileSize(bytes) {
+      if (bytes < 1024) return bytes + " B";
+      if (bytes < 1048576) return Math.round(bytes / 1024) + " KB";
+      return (bytes / 1048576).toFixed(1) + " MB";
+    }
 
-  // RUNNABLE inside a native call is idle, not load. Shown as a tile and in the States
-  // hint — not as a finding, since every JVM has such threads and it would fire always.
-  var RE_NATIVE_IDLE = /Native Method|socketRead0|epollWait|poll0|accept0/;
-  function isNativeIdle(t) {
-    return t.state === "RUNNABLE" && RE_NATIVE_IDLE.test(t.frames.join("\n"));
-  }
+    /*Collapses a digit run to "N" only if it borders a non-alphanumeric character (or the
+     start/end of the string) on at least one side. That is what separates a worker index —
+     "-thread-19", "LauncherServer-121", the octets in "10.233.10.1" — from a digit that is
+     just part of the name, like the "2" in "a2p-supervisor". Blind /\d+/g would turn the
+     latter into "aNp-supervisor" and misgroup it.*/
+    function normalizeName(name) {
+      return name.replace(/\d+/g, function (run, offset, str) {
+        var before = offset > 0 ? str.charAt(offset - 1) : "";
+        var after = offset + run.length < str.length ? str.charAt(offset + run.length) : "";
+        var isBoundary = function (c) {
+          return c === "" || !/[a-zA-Z0-9]/.test(c);
+        };
+        return (isBoundary(before) || isBoundary(after)) ? "N" : run;
+      });
+    }
 
-  function pools(d) {
-    var g = groupBy(d.threads, poolOf);
-    return Object.keys(g).map(function (k) {
-      var items = g[k];
-      var busy = items.filter(function (t) { return !isIdleWorker(t); });
-      return { name: k, items: items, busy: busy, ratio: busy.length / items.length };
-    }).filter(function (p) { return p.items.length > 1 && looksLikePool(p.items); })
-      .sort(function (a, b) { return b.busy.length - a.busy.length || b.items.length - a.items.length; });
-  }
+    // ------------------------------------------------------------------ parsing
 
-  function viewPools(d) {
-    var ps = pools(d);
-    if (!ps.length) return '<div class="empty">No pool-like groups found.</div>';
+    var RE_HEAD_A = /^"(.*)"\s+-\s+Thread\s+t@(\d+)/;
+    /*From JDK 21 on, HotSpot prints an [<os thread id>] after #<n> (and nid in decimal rather
+     than hex). Checked across Temurin 8/17/21/25/26, JetBrains Runtime 25 and OpenJDK 27/28:
+     it tracks the version, not the vendor. Without the optional group the whole header fails
+     to match and those threads vanish in silence — it cost 143 of 162 threads once.*/
+    var RE_HEAD_B = /^"(.*)"\s+(?:#(\d+)\s+)?(?:\[\d+\]\s+)?(?:daemon\s+)?(?:prio=|os_prio=|tid=|nid=|cpu=)/;
+    var RE_STATE = /java\.lang\.Thread\.State:\s*([A-Z_]+)/;
+    var RE_FRAME = /^\s+at\s+(.+)$/;
+    var RE_OWNED = /owned by\s+"(.*?)"\s+(?:t@|#)?(\d+)/;
 
-    var body = ps.map(function (p, i) {
-      var topBusy = p.busy.length ? sortedGroups(groupBy(p.busy, function (t) { return t.top; }))[0] : null;
-      var warn = p.ratio === 1 && p.items.length >= 3;
-      return '<tr class="clickable" data-group="' + i + '">' +
-        '<td class="m">' + esc(p.name) + "</td>" +
-        '<td class="n">' + p.items.length + "</td>" +
-        '<td class="n' + (warn ? " delta-up" : "") + '">' + p.busy.length + "</td>" +
-        '<td style="width:8rem"><div class="bar' + (warn ? " bar-alert" : "") +
+    /*Two ways a thread can wait for a lock, and two ways to own one.
+     Monitors (synchronized) name the owner inline; j.u.c locks do not — their owner is only
+     discoverable through the "Locked ownable synchronizers" section of another thread.*/
+    var RE_WAIT_LOCK = /waiting to lock\s+<([0-9a-fx]+)>/i;
+    var RE_PARK_FOR = /parking to wait for\s+<([0-9a-fx]+)>/i;
+    var RE_LOCKED = /^-\s+locked\s+<([0-9a-fx]+)>/i;
+    var RE_OWNS_SYNC = /^-\s+<([0-9a-fx]+)>\s+\(a\s/i;
+    var RE_SYNC_HEAD = /Locked ownable synchronizers:/i;
+    var RE_DEADLOCK = /Found (?:one|\d+) Java-level deadlock/i;
+    var RE_DL_END = /Java stack information for the threads listed above/i;
+
+    /*Seen on plain jstack of an IntelliJ process: a Kotlin coroutine tree appended after the
+     last thread, with no header of its own — otherwise it becomes thousands of stray "frames"
+     on whichever thread printed last. Which layer emits it is not established; a dump from a
+     coroutine app on stock HotSpot would settle it. Everything from here to EOF is dropped on
+     purpose: a coroutine isn't a java.lang.Thread, and every view assumes one.*/
+    var RE_TRAILER = /^-+\s*coroutine dump\s*-+\s*$/i;
+    var RE_PLAIN_HEAD = /^#\d+\s+"/;
+
+    /*jcmd Thread.dump_to_file, the only dump that shows virtual threads — jstack never does.
+     Only the JSON variant is read: it needs no parsing, carries state and lock ownership as
+     fields instead of prose, and has been byte-stable from JDK 25 through 28-ea. The plain
+     variant is recognised further down only to tell people which flag to re-run with.*/
+    /*Threads forked into a StructuredTaskScope have no name; this is what stands in for one.*/
+    var UNNAMED = "(unnamed)";
+
+    function parseJson(text) {
+      var d = JSON.parse(text).threadDump;
+      if (!d || !d.threadContainers) return null;
+      var threads = [];
+      d.threadContainers.forEach(function (c) {
+        (c.threads || []).forEach(function (t) {
+          var frames = t.stack || [];
+          var held = [];
+          (t.monitorsOwned || []).forEach(function (m) {
+            (m.locks || []).forEach(function (l) {
+              held.push(l);
+            });
+          });
+          threads.push({
+            name: t.name || UNNAMED,
+            id: t.tid ? parseInt(t.tid, 10) : null,
+            // JDK 21 omits state entirely; 25+ uses the same names as Thread.State.
+            state: t.state || "UNKNOWN",
+            frames: frames,
+            locks: [],
+            waitsFor: null,
+            waitingOn: t.blockedOn || t.waitingOn || (t.parkBlocker && t.parkBlocker.object) || null,
+            locksHeld: held,
+            virtual: !!t.virtual,
+            container: c.container || null,
+            // Rebuilt so the stack panel and Stack search have something to show, since the
+            // JSON carries no dump text of its own.
+            raw: ['"' + (t.name || UNNAMED) + '" #' + t.tid +
+            (t.virtual ? " virtual" : "") + (t.state ? " " + t.state : "")]
+              .concat(frames.map(function (f) {
+                return "\tat " + f;
+              }))
+          });
+        });
+      });
+      return threads;
+    }
+
+    function parse(text) {
+      if (/^\s*\{/.test(text)) {
+        try {
+          var fromJson = parseJson(text);
+          if (fromJson) return finish(fromJson, [], 0, 0);
+        } catch (e) { /* not a thread dump JSON — fall through to the text parser */
+        }
+      }
+
+      var lines = text.split(/\r?\n/);
+      var threads = [];
+      var cur = null;
+      var inSync = false;
+      var unknownHeaders = 0;
+      var plainHeaders = 0;
+
+      function push() {
+        if (cur) {
+          threads.push(cur);
+          cur = null;
+        }
+      }
+
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+
+        if (RE_TRAILER.test(line)) {
+          push();
+          continue;
+        }
+
+        /*The plain variant of Thread.dump_to_file: "#12 "name"" instead of ""name" #12".
+         Counted, not parsed — JSON says the same and more, so we point people at that flag.*/
+        if (RE_PLAIN_HEAD.test(line)) {
+          plainHeaders++;
+          continue;
+        }
+
+        if (line.charAt(0) === '"') {
+          var m = RE_HEAD_A.exec(line);
+          var id = null;
+          var name;
+          if (m) {
+            name = m[1];
+            id = parseInt(m[2], 10);
+          } else {
+            m = RE_HEAD_B.exec(line);
+            // A quoted line matching no header shape is a thread in a format we don't know yet.
+            // Counted so the loss is reported rather than left to be inferred from a low count.
+            if (!m) {
+              unknownHeaders++;
+              continue;
+            }
+            name = m[1];
+            id = m[2] ? parseInt(m[2], 10) : null;
+          }
+          push();
+          cur = {
+            name: name, id: id, state: "UNKNOWN", frames: [], locks: [],
+            waitsFor: null, waitingOn: null, locksHeld: [], raw: [line]
+          };
+          inSync = false;
+          continue;
+        }
+
+        if (!cur) continue;
+        cur.raw.push(line);
+
+        var st = RE_STATE.exec(line);
+        if (st) {
+          cur.state = st[1];
+          continue;
+        }
+
+        var fr = RE_FRAME.exec(line);
+        if (fr) {
+          cur.frames.push(fr[1]);
+          continue;
+        }
+
+        if (RE_SYNC_HEAD.test(line)) {
+          inSync = true;
+          continue;
+        }
+
+        var t = line.trim();
+        if (t.charAt(0) === "-" && t.length > 1) {
+          cur.locks.push(t);
+
+          var w = RE_WAIT_LOCK.exec(t) || RE_PARK_FOR.exec(t);
+          if (w) cur.waitingOn = w[1];
+
+          var held = RE_LOCKED.exec(t);
+          if (held) cur.locksHeld.push(held[1]);
+          if (inSync) {
+            var own = RE_OWNS_SYNC.exec(t);
+            if (own) cur.locksHeld.push(own[1]);
+          }
+
+          var ow = RE_OWNED.exec(t);
+          if (ow && w) cur.waitsFor = {name: ow[1], id: parseInt(ow[2], 10), lock: w[1]};
+        }
+      }
+      push();
+
+      return finish(threads, lines, unknownHeaders, plainHeaders);
+    }
+
+    /*Shared by both input formats: derived fields, then lock owners the dump did not name
+    inline. Covers ReentrantLock and any other AbstractOwnableSynchronizer, plus monitors on
+    dumps that print "locked" but not "owned by". JSON identifies locks by "Type@hash"
+    instead of an address, which resolves through the same map.*/
+    function finish(threads, lines, unknownHeaders, plainHeaders) {
+      threads.forEach(function (th) {
+        th.norm = normalizeName(th.name);
+        th.top = th.frames.length ? th.frames[0] : "(no stack)";
+      });
+
+      var owner = Object.create(null);
+      threads.forEach(function (th) {
+        th.locksHeld.forEach(function (id) {
+          if (!owner[id]) owner[id] = th;
+        });
+      });
+      threads.forEach(function (th) {
+        if (th.waitsFor || !th.waitingOn) return;
+        var o = owner[th.waitingOn];
+        if (o && o !== th) th.waitsFor = {name: o.name, id: o.id, lock: th.waitingOn};
+      });
+
+      return {
+        threads: threads,
+        byState: countBy(threads, function (t) {
+          return t.state;
+        }),
+        deadlock: extractDeadlock(lines),
+        unknownHeaders: unknownHeaders,
+        plainHeaders: plainHeaders || 0
+      };
+    }
+
+    // The JVM prints its own deadlock report above the thread list. Keep it verbatim:
+    // re-deriving it from the wait graph is redundant and less reliable.
+    function extractDeadlock(lines) {
+      var start = -1;
+      for (var i = 0; i < lines.length; i++) {
+        if (RE_DEADLOCK.test(lines[i])) {
+          start = i;
+          break;
+        }
+      }
+      if (start < 0) return null;
+      var block = [];
+      for (var j = start; j < lines.length && block.length < 200; j++) {
+        if (j > start && RE_DL_END.test(lines[j])) break;
+        block.push(lines[j]);
+      }
+      return block.join("\n").replace(/\s+$/, "");
+    }
+
+    function countBy(arr, fn) {
+      var m = Object.create(null);
+      arr.forEach(function (x) {
+        var k = fn(x);
+        m[k] = (m[k] || 0) + 1;
+      });
+      return m;
+    }
+
+    function groupBy(arr, fn) {
+      var m = Object.create(null);
+      arr.forEach(function (x) {
+        var k = fn(x);
+        (m[k] || (m[k] = [])).push(x);
+      });
+      return m;
+    }
+
+    function sortedGroups(map) {
+      return Object.keys(map)
+        .map(function (k) {
+          return {key: k, items: map[k]};
+        })
+        .sort(function (a, b) {
+          return b.items.length - a.items.length || a.key.localeCompare(b.key);
+        });
+    }
+
+    // ------------------------------------------------------------- pools & hints
+
+    /*Pool name is the normalized thread name, unchanged. An earlier version stripped a
+    trailing "-N" as the worker index, which reads well for "spark-job-thread-19" but
+    truncates anything else ending in a number — "RMI TCP Connection(3)-127.0.0.1" lost
+    its last IP octet. Naming schemes vary too much to guess which trailing number is an
+    index, and stripping also merged distinct groups: "foo-N" and "foo-thread-N" both
+    collapsed to "foo". Labels are longer this way, and they match the dump.*/
+    function poolOf(t) {
+      return t.norm;
+    }
+
+    // A worker ready to take work: waiting on the task queue, or sitting in an event loop.
+    // An event loop (epoll/kqueue/select) counts as ready — it does not stop the pool.
+    var RE_IDLE = /ThreadPoolExecutor\.getTask|ForkJoinPool\.awaitWork|ForkJoinPool\.scan|DelayedWorkQueue\.take|epollWait|EPollArrayWrapper\.poll|KQueueArrayWrapper|SelectorImpl\.(?:select|doSelect)|SingleThreadEventExecutor/;
+
+    /*A blocking socket read looks identical whether the thread waits for the next incoming
+    request or for the answer to one it sent. What separates them is the rest of the stack:
+    an RMI/JMX connection handler is JDK frames all the way down, while a client waiting on
+    a response has the calling code in it. A JDK-only stack blocked in a native call is
+    infrastructure parked between requests — not application work, so not busy.*/
+    var RE_JDK = /^(?:java|javax|sun|jdk|com\.sun)\./;
+    var RE_BLOCKED_NATIVE = /Native Method|socketRead0|epollWait|accept0|poll0/;
+
+    function isInfraIdle(t) {
+      return t.frames.length > 0 &&
+        RE_BLOCKED_NATIVE.test(t.top) &&
+        t.frames.every(function (f) {
+          return RE_JDK.test(f);
+        });
+    }
+
+    /*The shared-frame check asks this once per (thread, distinct frame) pair, and each call
+    re-joined the whole stack: 2000 threads at 500 frames took ~7s here, ~200ms once memoised.
+    Frames never change after parsing. WeakMap, not a field, because custom rules see these
+    objects and shouldn't find our bookkeeping in them.*/
+    var idleCache = new WeakMap();
+
+    function isIdleWorker(t) {
+      var cached = idleCache.get(t);
+      if (cached === undefined) {
+        cached = RE_IDLE.test(t.frames.join("\n")) || isInfraIdle(t);
+        idleCache.set(t, cached);
+      }
+      return cached;
+    }
+
+    // A real pool is recognised by the executor frame in the stack, not by the name:
+    // otherwise any group with a number in its name becomes a "pool" (DataStreamer, Thread-N).
+    var RE_WORKER = /ThreadPoolExecutor\.runWorker|ForkJoinWorkerThread\.run|ScheduledThreadPoolExecutor|SingleThreadEventExecutor/;
+
+    function looksLikePool(items) {
+      return items.some(function (t) {
+        return RE_WORKER.test(t.frames.join("\n"));
+      });
+    }
+
+    // RUNNABLE inside a native call is idle, not load. Shown as a tile and in the States
+    // hint — not as a finding, since every JVM has such threads and it would fire always.
+    var RE_NATIVE_IDLE = /Native Method|socketRead0|epollWait|poll0|accept0/;
+
+    function isNativeIdle(t) {
+      return t.state === "RUNNABLE" && RE_NATIVE_IDLE.test(t.frames.join("\n"));
+    }
+
+    function pools(d) {
+      var g = groupBy(d.threads, poolOf);
+      return Object.keys(g).map(function (k) {
+        var items = g[k];
+        var busy = items.filter(function (t) {
+          return !isIdleWorker(t);
+        });
+        return {name: k, items: items, busy: busy, ratio: busy.length / items.length};
+      }).filter(function (p) {
+        return p.items.length > 1 && looksLikePool(p.items);
+      })
+        .sort(function (a, b) {
+          return b.busy.length - a.busy.length || b.items.length - a.items.length;
+        });
+    }
+
+    function viewPools(d) {
+      var ps = pools(d);
+      if (!ps.length) return '<div class="empty">No pool-like groups found.</div>';
+
+      var body = ps.map(function (p, i) {
+        var topBusy = p.busy.length ? sortedGroups(groupBy(p.busy, function (t) {
+          return t.top;
+        }))[0] : null;
+        var warn = p.ratio === 1 && p.items.length >= 3;
+        return '<tr class="clickable" data-group="' + i + '">' +
+          '<td class="m">' + esc(p.name) + "</td>" +
+          '<td class="n">' + p.items.length + "</td>" +
+          '<td class="n' + (warn ? " delta-up" : "") + '">' + p.busy.length + "</td>" +
+          '<td style="width:8rem"><div class="bar' + (warn ? " bar-alert" : "") +
           '" style="width:' + Math.max(p.ratio * 100, 2) + '%"></div></td>' +
-        '<td class="m">' + (topBusy ? esc(topBusy.key) + (topBusy.items.length > 1 ? " ×" + topBusy.items.length : "") : "—") + "</td></tr>" +
-        '<tr hidden data-groupbody="' + i + '"><td colspan="5" style="padding:0">' +
-        // Busy first. The list is capped, and in dump order the few busy threads of a large
-        // pool can fall past the cap — so the row advertises what they are doing and expanding
-        // it shows a hundred idle ones instead. They are the reason the row gets opened.
-        subTable(p.busy.concat(p.items.filter(isIdleWorker)), 100) + "</td></tr>";
-    }).join("");
+          '<td class="m">' + (topBusy ? esc(topBusy.key) + (topBusy.items.length > 1 ? " ×" + topBusy.items.length : "") : "—") + "</td></tr>" +
+          '<tr hidden data-groupbody="' + i + '"><td colspan="5" style="padding:0">' +
+          // Busy first. The list is capped, and in dump order the few busy threads of a large
+          // pool can fall past the cap — so the row advertises what they are doing and expanding
+          // it shows a hundred idle ones instead. They are the reason the row gets opened.
+          subTable(p.busy.concat(p.items.filter(isIdleWorker)), 100) + "</td></tr>";
+      }).join("");
 
-    return tableWrap(
-      "<th>Pool</th><th>Threads</th><th>Busy</th><th></th><th>Busy top frame</th>",
-      body,
-      "Busy = not waiting for a task. A fully busy pool means everything that uses it is queued."
-    );
-  }
-
-  // ------------------------------------------------------------------ findings
-
-  // Library signatures. Unlike the generic checks below these are stack-specific and stay silent
-  // when the frames are absent. The bar for adding one here is that a stranger with a JVM dump
-  // could plausibly be running the library — anything narrower belongs in rules/ as a rule to
-  // paste in, or the list grows into a junk drawer of other people's stacks.
-  var SIGNATURES = [
-    {
-      via: "HikariCP",
-      match: function (t) { return /HikariPool\.getConnection|ConnectionPool\.borrow/.test(t.frames.join("\n")); },
-      title: function (n) { return nThreads(n) + " waiting for a DB connection"; },
-      text: "The connection pool is exhausted: either too small for the load, or connections are " +
-            "held longer than needed. Check what the threads that already hold one are doing."
+      return tableWrap(
+        "<th>Pool</th><th>Threads</th><th>Busy</th><th></th><th>Busy top frame</th>",
+        body,
+        "Busy = not waiting for a task. A fully busy pool means everything that uses it is queued."
+      );
     }
-  ];
 
-  // User-defined rules. Same idea as SIGNATURES above, but authored from the Findings tab
-  // itself instead of edited into the source, and free to look at the whole dump rather than
-  // one thread at a time. Stored in localStorage — never leaves the browser, same as the dump.
-  var RULES_KEY = "tdi.customRules";
+    // ------------------------------------------------------------------ findings
 
-  function loadCustomRules() {
-    try {
-      var arr = JSON.parse(localStorage.getItem(RULES_KEY) || "[]");
-      return Array.isArray(arr) ? arr : [];
-    } catch (e) { return []; }
-  }
+    /*Library signatures. Unlike the generic checks below these are stack-specific and stay silent
+    when the frames are absent. The bar for adding one here is that a stranger with a JVM dump
+    could plausibly be running the library — anything narrower belongs in rules/ as a rule to
+    paste in, or the list grows into a junk drawer of other people's stacks.*/
+    var SIGNATURES = [
+      {
+        via: "HikariCP",
+        match: function (t) {
+          return /HikariPool\.getConnection|ConnectionPool\.borrow/.test(t.frames.join("\n"));
+        },
+        title: function (n) {
+          return nThreads(n) + " waiting for a DB connection";
+        },
+        text: "The connection pool is exhausted: either too small for the load, or connections are " +
+          "held longer than needed. Check what the threads that already hold one are doing."
+      }
+    ];
 
-  function saveCustomRules(rules) {
-    try { localStorage.setItem(RULES_KEY, JSON.stringify(rules)); } catch (e) {}
-  }
+    /*User-defined rules. Same idea as SIGNATURES above, but authored from the Findings tab
+    itself instead of edited into the source, and free to look at the whole dump rather than
+    one thread at a time. Stored in localStorage — never leaves the browser, same as the dump.*/
+    var RULES_KEY = "tdi.customRules";
 
-  // What a rule's function body can call without importing anything: the same building
-  // blocks the built-in checks above use.
-  var RULE_HELPERS = { groupBy: groupBy, sortedGroups: sortedGroups, pools: pools, poolOf: poolOf, isIdleWorker: isIdleWorker, nThreads: nThreads };
-  var RULE_HELPER_NAMES = Object.keys(RULE_HELPERS);
-  var RULE_HELPER_VALUES = RULE_HELPER_NAMES.map(function (k) { return RULE_HELPERS[k]; });
-
-  // Compiled fresh on every run rather than cached: a rule is a handful of lines, re-parsing
-  // it costs nothing next to walking the thread list, and it means an edit takes effect the
-  // moment you hit Save with no invalidation to think about.
-  //
-  // Each helper is also its own parameter, so a rule can call nThreads(n) directly instead of
-  // helpers.nThreads(n). Reaching for the bare name is the first thing everybody tries, and a
-  // ReferenceError is a poor greeting for someone writing their first rule.
-  function compileRule(code) {
-    return Function.apply(null, ["d", "helpers"].concat(RULE_HELPER_NAMES, [code]));
-  }
-
-  // What the thread table needs to render a row and its stack. Anything else in items is a
-  // rule bug, not a thread.
-  function isThread(x) {
-    return !!x && Array.isArray(x.raw) && Array.isArray(x.frames);
-  }
-
-  function runCustomRules(d) {
-    var out = [];
-    loadCustomRules().forEach(function (rule) {
-      if (!rule.enabled) return;
+    function loadCustomRules() {
       try {
-        var res = compileRule(rule.code).apply(null, [d, RULE_HELPERS].concat(RULE_HELPER_VALUES));
-        if (!res) return;
-        (Array.isArray(res) ? res : [res]).forEach(function (r) {
-          if (!r || !r.title) return;
-          // items is rendered by subTable, which runs outside this try/catch, so anything that
-          // is not a thread throws there and takes the whole tab down with it. Checking that
-          // items is an array is not enough — the array has to hold threads, and a rule that
-          // returns groups, keys or plain objects is an easy mistake to make.
-          var given = Array.isArray(r.items) ? r.items : (r.items ? [r.items] : []);
-          var items = given.filter(isThread);
-          var dropped = given.length - items.length;
-          var note = dropped
-            ? " (" + dropped + " returned item" + (dropped === 1 ? " was" : "s were") +
+        var arr = JSON.parse(localStorage.getItem(RULES_KEY) || "[]");
+        return Array.isArray(arr) ? arr : [];
+      } catch (e) {
+        return [];
+      }
+    }
+
+    function saveCustomRules(rules) {
+      try {
+        localStorage.setItem(RULES_KEY, JSON.stringify(rules));
+      } catch (e) {
+      }
+    }
+
+    // What a rule's function body can call without importing anything: the same building
+    // blocks the built-in checks above use.
+    var RULE_HELPERS = {
+      groupBy: groupBy,
+      sortedGroups: sortedGroups,
+      pools: pools,
+      poolOf: poolOf,
+      isIdleWorker: isIdleWorker,
+      nThreads: nThreads
+    };
+    var RULE_HELPER_NAMES = Object.keys(RULE_HELPERS);
+    var RULE_HELPER_VALUES = RULE_HELPER_NAMES.map(function (k) {
+      return RULE_HELPERS[k];
+    });
+
+    /*Compiled fresh on every run rather than cached: a rule is a handful of lines, re-parsing
+    it costs nothing next to walking the thread list, and it means an edit takes effect the
+    moment you hit Save with no invalidation to think about.
+
+    Each helper is also its own parameter, so a rule can call nThreads(n) directly instead of
+    helpers.nThreads(n). Reaching for the bare name is the first thing everybody tries, and a
+    ReferenceError is a poor greeting for someone writing their first rule.*/
+    function compileRule(code) {
+      return Function.apply(null, ["d", "helpers"].concat(RULE_HELPER_NAMES, [code]));
+    }
+
+    // What the thread table needs to render a row and its stack. Anything else in items is a
+    // rule bug, not a thread.
+    function isThread(x) {
+      return !!x && Array.isArray(x.raw) && Array.isArray(x.frames);
+    }
+
+    function runCustomRules(d) {
+      var out = [];
+      loadCustomRules().forEach(function (rule) {
+        if (!rule.enabled) return;
+        try {
+          var res = compileRule(rule.code).apply(null, [d, RULE_HELPERS].concat(RULE_HELPER_VALUES));
+          if (!res) return;
+          (Array.isArray(res) ? res : [res]).forEach(function (r) {
+            if (!r || !r.title) return;
+            /*items is rendered by subTable, which runs outside this try/catch, so anything that
+            is not a thread throws there and takes the whole tab down with it. Checking that
+            items is an array is not enough — the array has to hold threads, and a rule that
+            returns groups, keys or plain objects is an easy mistake to make.*/
+            var given = Array.isArray(r.items) ? r.items : (r.items ? [r.items] : []);
+            var items = given.filter(isThread);
+            var dropped = given.length - items.length;
+            var note = dropped
+              ? " (" + dropped + " returned item" + (dropped === 1 ? " was" : "s were") +
               " not a thread and got dropped — items must hold objects from d.threads.)"
-            : "";
+              : "";
+            out.push({
+              level: r.level === "alert" ? "alert" : "warn",
+              title: String(r.title),
+              text: (r.text == null ? "" : String(r.text)) + note,
+              items: items,
+              via: rule.name,
+              custom: true
+            });
+          });
+        } catch (err) {
+          /*The message goes in the text, not just the stack: Chrome repeats it on the first
+          stack line but Firefox and Safari do not, and there the card showed frames only —
+          every line of noise and not the one thing you need to read.*/
+          var msg = String((err && err.message) || err);
+          var stack = (err && err.stack) || "";
           out.push({
-            level: r.level === "alert" ? "alert" : "warn",
-            title: String(r.title),
-            text: (r.text == null ? "" : String(r.text)) + note,
-            items: items,
+            level: "alert",
+            title: 'Custom rule "' + rule.name + '" threw and was skipped',
+            text: msg + " — fix it in the editor below the findings list.",
+            pre: stack.indexOf(msg) === 0 ? stack : (stack ? msg + "\n" + stack : msg),
             via: rule.name,
             custom: true
           });
-        });
-      } catch (err) {
-        // The message goes in the text, not just the stack: Chrome repeats it on the first
-        // stack line but Firefox and Safari do not, and there the card showed frames only —
-        // every line of noise and not the one thing you need to read.
-        var msg = String((err && err.message) || err);
-        var stack = (err && err.stack) || "";
+        }
+      });
+      return out;
+    }
+
+    function findings(d) {
+      var out = [];
+      var all = d.threads;
+
+      // Thresholds scale with the dump: absolute numbers tuned on one service either stay
+      // silent on a small process or flood on a large one. Floors keep tiny dumps sane.
+      var total = all.length;
+      var manyThreads = Math.max(5, Math.ceil(total * 0.05));  // pile-up in one frame
+      var sharedThreads = Math.max(5, Math.ceil(total * 0.03));  // one call across pools
+      var MIN_POOL = 3;                                     // smaller pools are noise
+      var MIN_WAITERS = 3;                                     // lock contention
+
+      // The JVM already found it — report verbatim, it outranks anything we infer.
+      if (d.deadlock) {
         out.push({
           level: "alert",
-          title: 'Custom rule "' + rule.name + '" threw and was skipped',
-          text: msg + " — fix it in the editor below the findings list.",
-          pre: stack.indexOf(msg) === 0 ? stack : (stack ? msg + "\n" + stack : msg),
-          via: rule.name,
-          custom: true
+          title: "The JVM reported a deadlock",
+          text: "Taken from the dump as-is. Threads in a deadlock never recover; the process needs " +
+            "a restart once you have the report.",
+          pre: d.deadlock
         });
       }
-    });
-    return out;
-  }
 
-  function findings(d) {
-    var out = [];
-    var all = d.threads;
-
-    // Thresholds scale with the dump: absolute numbers tuned on one service either stay
-    // silent on a small process or flood on a large one. Floors keep tiny dumps sane.
-    var total = all.length;
-    var manyThreads   = Math.max(5, Math.ceil(total * 0.05));  // pile-up in one frame
-    var sharedThreads = Math.max(5, Math.ceil(total * 0.03));  // one call across pools
-    var MIN_POOL      = 3;                                     // smaller pools are noise
-    var MIN_WAITERS   = 3;                                     // lock contention
-
-    // The JVM already found it — report verbatim, it outranks anything we infer.
-    if (d.deadlock) {
-      out.push({
-        level: "alert",
-        title: "The JVM reported a deadlock",
-        text: "Taken from the dump as-is. Threads in a deadlock never recover; the process needs " +
-              "a restart once you have the report.",
-        pre: d.deadlock
-      });
-    }
-
-    // 1. Pool fully busy
-    pools(d).forEach(function (p) {
-      if (p.ratio < 1 || p.items.length < MIN_POOL) return;
-      var dominant = sortedGroups(groupBy(p.busy, function (t) { return t.top; }))[0];
-      if (dominant.items.length / p.busy.length < 0.6) return;
-      out.push({
-        level: "alert",
-        title: "Pool " + p.name + " is fully busy",
-        text: "All " + nThreads(p.items.length) + " busy, " + dominant.items.length +
-              " of them in the same frame: " + dominant.key + ". Anything queued for this pool waits " +
-              "until a thread frees up. If the pool is shared with other work, that blocking call " +
-              "belongs on a pool of its own.",
-        items: p.busy
-      });
-    });
-
-    // 2. Lock contention
-    var waiters = all.filter(function (t) { return t.waitsFor; });
-    sortedGroups(groupBy(waiters, function (t) { return t.waitsFor.name + " t@" + t.waitsFor.id; })).forEach(function (g) {
-      if (g.items.length < MIN_WAITERS) return;
-      var owner = all.filter(function (t) { return t.id === g.items[0].waitsFor.id; })[0];
-      out.push({
-        level: "alert",
-        title: nThreads(g.items.length) + " waiting on one lock",
-        text: "Holder: " + g.key + (owner ? ", currently in " + owner.top : " (not present in this dump)") +
-              ". The bottleneck is the holder, not the waiters.",
-        items: g.items
-      });
-    });
-
-    // BLOCKED threads whose owner the dump never named fall out of the check above and would
-    // otherwise surface nowhere but the summary tile.
-    var orphanBlocked = all.filter(function (t) { return t.state === "BLOCKED" && !t.waitsFor; });
-    if (orphanBlocked.length >= MIN_WAITERS) {
-      out.push({
-        level: "alert",
-        title: nThreads(orphanBlocked.length) + " BLOCKED, owner not named in the dump",
-        text: "The waiters cannot be attributed to a holder: the dump gives neither an inline owner " +
-              "nor a Locked ownable synchronizers section to resolve one. Re-take it with jstack -l, " +
-              "or look for what these threads have in common in the frames below.",
-        items: orphanBlocked
-      });
-    }
-
-    // 3. Identical stacks outside pools
-    sortedGroups(groupBy(all.filter(function (t) { return !isIdleWorker(t); }), function (t) { return t.top; }))
-      .forEach(function (g) {
-        if (g.items.length < manyThreads) return;
-        var poolNames = Object.keys(groupBy(g.items, poolOf));
+      // 1. Pool fully busy
+      pools(d).forEach(function (p) {
+        if (p.ratio < 1 || p.items.length < MIN_POOL) return;
+        var dominant = sortedGroups(groupBy(p.busy, function (t) {
+          return t.top;
+        }))[0];
+        if (dominant.items.length / p.busy.length < 0.6) return;
         out.push({
-          level: "warn",
-          title: nThreads(g.items.length) + " in the same frame",
-          text: g.key + ". Groups affected: " + poolNames.slice(0, 4).join(", ") +
-                (poolNames.length > 4 ? " and " + (poolNames.length - 4) + " more" : "") +
-                ". This many identical stacks usually means work is piling up.",
+          level: "alert",
+          title: "Pool " + p.name + " is fully busy",
+          text: "All " + nThreads(p.items.length) + " busy, " + dominant.items.length +
+            " of them in the same frame: " + dominant.key + ". Anything queued for this pool waits " +
+            "until a thread frees up. If the pool is shared with other work, that blocking call " +
+            "belongs on a pool of its own.",
+          items: p.busy
+        });
+      });
+
+      // 2. Lock contention
+      var waiters = all.filter(function (t) {
+        return t.waitsFor;
+      });
+      sortedGroups(groupBy(waiters, function (t) {
+        return t.waitsFor.name + " t@" + t.waitsFor.id;
+      })).forEach(function (g) {
+        if (g.items.length < MIN_WAITERS) return;
+        var owner = all.filter(function (t) {
+          return t.id === g.items[0].waitsFor.id;
+        })[0];
+        out.push({
+          level: "alert",
+          title: nThreads(g.items.length) + " waiting on one lock",
+          text: "Holder: " + g.key + (owner ? ", currently in " + owner.top : " (not present in this dump)") +
+            ". The bottleneck is the holder, not the waiters.",
           items: g.items
         });
       });
 
-    // 4. One external call pulls in several pools.
-    // A shared stack matches at every level, so candidates are clustered by how much their
-    // thread sets overlap; the deepest frame survives — where the wait actually happens.
-    var byFrame = Object.create(null);
-    all.forEach(function (t) {
-      var seen = Object.create(null);
-      t.frames.forEach(function (f, depth) {
-        var key = f.replace(/\(.*/, "");
-        if (seen[key]) return;
-        seen[key] = 1;
-        (byFrame[key] || (byFrame[key] = [])).push({ t: t, depth: depth });
+      // BLOCKED threads whose owner the dump never named fall out of the check above and would
+      // otherwise surface nowhere but the summary tile.
+      var orphanBlocked = all.filter(function (t) {
+        return t.state === "BLOCKED" && !t.waitsFor;
       });
-    });
+      if (orphanBlocked.length >= MIN_WAITERS) {
+        out.push({
+          level: "alert",
+          title: nThreads(orphanBlocked.length) + " BLOCKED, owner not named in the dump",
+          text: "The waiters cannot be attributed to a holder: nothing in this dump names who owns " +
+            "the lock. A text dump re-taken with jstack -l carries the Locked ownable synchronizers " +
+            "section, which usually resolves it. Otherwise look for what these threads have in " +
+            "common in the frames below.",
+          items: orphanBlocked
+        });
+      }
 
-    var cands = [];
-    Object.keys(byFrame).forEach(function (f) {
-      if (/^(java|scala|sun|jdk)\./.test(f)) return;
-      var hits = byFrame[f].filter(function (h) { return !isIdleWorker(h.t); });
-      if (hits.length < sharedThreads) return;
-      var items = hits.map(function (h) { return h.t; });
-      if (Object.keys(groupBy(items, poolOf)).length < 3) return;
-      cands.push({
-        frame: f,
-        items: items,
-        ids: items.map(function (t) { return t.id; }),
-        depth: hits.reduce(function (a, h) { return a + h.depth; }, 0) / hits.length
+      // 3. Identical stacks outside pools
+      sortedGroups(groupBy(all.filter(function (t) {
+        return !isIdleWorker(t);
+      }), function (t) {
+        return t.top;
+      }))
+        .forEach(function (g) {
+          if (g.items.length < manyThreads) return;
+          var poolNames = Object.keys(groupBy(g.items, poolOf));
+          out.push({
+            level: "warn",
+            title: nThreads(g.items.length) + " in the same frame",
+            text: g.key + ". Groups affected: " + poolNames.slice(0, 4).join(", ") +
+              (poolNames.length > 4 ? " and " + (poolNames.length - 4) + " more" : "") +
+              ". This many identical stacks usually means work is piling up.",
+            items: g.items
+          });
+        });
+
+      /*4. One external call pulls in several pools.
+      A shared stack matches at every level, so candidates are clustered by how much their
+      thread sets overlap; the deepest frame survives — where the wait actually happens.*/
+      var byFrame = Object.create(null);
+      all.forEach(function (t) {
+        var seen = Object.create(null);
+        t.frames.forEach(function (f, depth) {
+          var key = f.replace(/\(.*/, "");
+          if (seen[key]) return;
+          seen[key] = 1;
+          (byFrame[key] || (byFrame[key] = [])).push({t: t, depth: depth});
+        });
       });
-    });
 
-    function overlap(a, b) {
-      var set = Object.create(null);
-      a.ids.forEach(function (id) { set[id] = 1; });
-      return b.ids.filter(function (id) { return set[id]; }).length / Math.min(a.ids.length, b.ids.length);
+      var cands = [];
+      Object.keys(byFrame).forEach(function (f) {
+        if (/^(java|scala|sun|jdk)\./.test(f)) return;
+        var hits = byFrame[f].filter(function (h) {
+          return !isIdleWorker(h.t);
+        });
+        if (hits.length < sharedThreads) return;
+        var items = hits.map(function (h) {
+          return h.t;
+        });
+        if (Object.keys(groupBy(items, poolOf)).length < 3) return;
+        cands.push({
+          frame: f,
+          items: items,
+          ids: items.map(function (t) {
+            return t.id;
+          }),
+          depth: hits.reduce(function (a, h) {
+            return a + h.depth;
+          }, 0) / hits.length
+        });
+      });
+
+      function overlap(a, b) {
+        var set = Object.create(null);
+        a.ids.forEach(function (id) {
+          set[id] = 1;
+        });
+        return b.ids.filter(function (id) {
+          return set[id];
+        }).length / Math.min(a.ids.length, b.ids.length);
+      }
+
+      var kept = [];
+      cands.sort(function (a, b) {
+        return a.depth - b.depth;
+      }).forEach(function (c) {
+        if (kept.length >= 3) return;
+        if (!kept.some(function (k) {
+          return overlap(k, c) > 0.8;
+        })) kept.push(c);
+      });
+
+      kept.sort(function (a, b) {
+        return b.items.length - a.items.length;
+      }).forEach(function (c) {
+        var ps = Object.keys(groupBy(c.items, poolOf));
+        out.push({
+          level: "warn",
+          title: "Shared point across " + ps.length + " thread groups",
+          text: nThreads(c.items.length) + " " + (c.items.length === 1 ? "passes" : "pass") +
+            " through " + c.frame + ". A shared resource on the path of several pools is a " +
+            "bottleneck candidate.",
+          items: c.items
+        });
+      });
+
+      // 5. Library signatures, see SIGNATURES above
+      SIGNATURES.forEach(function (sig) {
+        var items = all.filter(sig.match);
+        if (!items.length) return;
+        out.push({level: "warn", via: sig.via, title: sig.title(items.length), text: sig.text, items: items});
+      });
+
+      // 6. User rules, see the editor at the bottom of the Findings tab.
+      out = out.concat(runCustomRules(d));
+
+      var rank = {alert: 0, warn: 1};
+      return out.sort(function (a, b) {
+        return rank[a.level] - rank[b.level] || (b.items ? b.items.length : 0) - (a.items ? a.items.length : 0);
+      });
     }
 
-    var kept = [];
-    cands.sort(function (a, b) { return a.depth - b.depth; }).forEach(function (c) {
-      if (kept.length >= 3) return;
-      if (!kept.some(function (k) { return overlap(k, c) > 0.8; })) kept.push(c);
-    });
-
-    kept.sort(function (a, b) { return b.items.length - a.items.length; }).forEach(function (c) {
-      var ps = Object.keys(groupBy(c.items, poolOf));
-      out.push({
-        level: "warn",
-        title: "Shared point across " + ps.length + " thread groups",
-        text: nThreads(c.items.length) + " " + (c.items.length === 1 ? "passes" : "pass") +
-              " through " + c.frame + ". A shared resource on the path of several pools is a " +
-              "bottleneck candidate.",
-        items: c.items
-      });
-    });
-
-    // 5. Library signatures, see SIGNATURES above
-    SIGNATURES.forEach(function (sig) {
-      var items = all.filter(sig.match);
-      if (!items.length) return;
-      out.push({ level: "warn", via: sig.via, title: sig.title(items.length), text: sig.text, items: items });
-    });
-
-    // 6. User rules, see the editor at the bottom of the Findings tab.
-    out = out.concat(runCustomRules(d));
-
-    var rank = { alert: 0, warn: 1 };
-    return out.sort(function (a, b) { return rank[a.level] - rank[b.level] || (b.items ? b.items.length : 0) - (a.items ? a.items.length : 0); });
-  }
-
-  function ruleRow(r, i) {
-    return '<div class="rule-row">' +
-      '<label class="rule-toggle"><input type="checkbox" data-rule-toggle="' + i + '"' +
-      (r.enabled ? " checked" : "") + ">" + esc(r.name) + "</label>" +
-      '<span class="rule-actions">' +
-      '<button data-rule-edit="' + i + '">Edit</button>' +
-      '<button data-rule-del="' + i + '">Delete</button>' +
-      "</span></div>";
-  }
-
-  function docRows(pairs) {
-    return "<table><tbody>" + pairs.map(function (p) {
-      return "<tr><td>" + p[0] + "</td><td>" + p[1] + "</td></tr>";
-    }).join("") + "</tbody></table>";
-  }
-
-  // Written as field tables rather than prose. The previous version was one dense paragraph
-  // listing the same names, and nobody reads a paragraph looking for "what is t.norm".
-  function ruleDoc() {
-    var example =
-      '// Threads blocked inside our own code, and what most of them are doing\n' +
-      'var mine = d.threads.filter(function (t) {\n' +
-      '  return t.state === "BLOCKED" && t.top.indexOf("com.acme.") === 0;\n' +
-      '});\n' +
-      'if (mine.length < 5) return [];\n\n' +
-      'var top = sortedGroups(groupBy(mine, function (t) { return t.top; }))[0];\n' +
-      'return [{\n' +
-      '  level: "alert",\n' +
-      '  title: nThreads(mine.length) + " blocked in application code",\n' +
-      '  text: "Most of them in " + top.key + ".",\n' +
-      '  items: mine\n' +
-      '}];';
-
-    return '<details class="rule-doc"' + (rulesDocOpen ? " open" : "") + ">" +
-      "<summary>How to write a rule — fields and helpers</summary>" +
-      '<div class="rule-doc-body">' +
-
-      "<p>What you write is the <strong>body</strong> of <code>function (d, helpers)</code> — no " +
-      "wrapper, just the statements, ending in a <code>return</code>. Return one finding object or " +
-      "an array of them. Return nothing, <code>null</code> or <code>[]</code> when this dump does " +
-      "not match — that is the normal way for a rule to stay quiet.</p>" +
-
-      "<p>Every helper is also in scope under its own name, so <code>nThreads(n)</code> and " +
-      "<code>helpers.nThreads(n)</code> are the same call. The example below uses the short form.</p>" +
-
-      "<h4>What to return</h4>" +
-      docRows([
-        ["title", "Required. Headline of the card."],
-        ["text", "Optional. The explanation under it — say what to do next, not just what was found."],
-        ["level", 'Optional. <code>"alert"</code> (red, Action) or <code>"warn"</code> (yellow, Check). Default <code>"warn"</code>.'],
-        ["items", "Optional. Array of threads. Adds the <em>Show threads</em> button with their stacks."]
-      ]) +
-
-      "<h4>d — the loaded dump</h4>" +
-      docRows([
-        ["d.threads", "Array of every thread in the dump. Fields below."],
-        ["d.byState", 'Counts per state: <code>{ RUNNABLE: 12, BLOCKED: 3, … }</code>.'],
-        ["d.deadlock", "The JVM's own deadlock report as text, or <code>null</code> if it printed none."]
-      ]) +
-
-      "<h4>t — one thread</h4>" +
-      docRows([
-        ["t.name", "Name exactly as the dump spells it."],
-        ["t.norm", "Name with instance numbers collapsed to <code>N</code> — use this to group siblings, " +
-                   "<code>name</code> to match one specific thread."],
-        ["t.state", 'RUNNABLE, BLOCKED, WAITING, TIMED_WAITING, NEW, TERMINATED, or UNKNOWN when the ' +
-                    'dump did not say. Careful: RUNNABLE in a native call means idle, not busy.'],
-        ["t.top", "Topmost frame as a string — what the thread is doing right now. " +
-                  "<code>\"(no stack)\"</code> if the dump gave no frames."],
-        ["t.frames", "All frames, top first. Use <code>t.frames.join(\"\\n\")</code> to regex the whole stack."],
-        ["t.waitsFor", "<code>{ name, id, lock }</code> of the thread holding the lock this one waits on, " +
-                       "or <code>null</code>. Resolved for both monitors and j.u.c. locks."],
-        ["t.waitingOn", "Id of the lock it is waiting for, or <code>null</code>."],
-        ["t.locksHeld", "Ids of the locks it currently owns."],
-        ["t.id", "Thread id (<code>t@N</code> / <code>#N</code>), or <code>null</code> if absent."],
-        ["t.raw", "The thread's original dump lines, unparsed."]
-      ]) +
-
-      "<h4>helpers — the same building blocks the built-in checks use</h4>" +
-      docRows([
-        ["groupBy(arr, fn)", "→ <code>{ key: [items] }</code>, keyed by whatever <code>fn</code> returns."],
-        ["sortedGroups(map)", "→ <code>[{ key, items }]</code>, biggest group first. Feed it a <code>groupBy</code> result."],
-        ["pools(d)", "→ <code>[{ name, items, busy, ratio }]</code> — the thread groups behind the Pools tab. " +
-                     "<code>ratio</code> is 1 when every worker is busy."],
-        ["poolOf(t)", "→ the group name for a thread (its <code>norm</code>)."],
-        ["isIdleWorker(t)", "→ <code>true</code> for a worker parked on its task queue or an event loop — " +
-                            "waiting for work, not doing it."],
-        ["nThreads(n)", '→ <code>"1 thread"</code> / <code>"5 threads"</code>. For titles.']
-      ]) +
-
-      "<h4>Example</h4>" +
-      "<pre>" + esc(example) + "</pre>" +
-
-      "<p>Code runs synchronously — <code>await</code> and <code>fetch</code> will not work, and only " +
-      "Dump A is visible, not the comparison dump. A syntax error is caught when you press Save; " +
-      "anything that throws at runtime becomes its own finding card with the message, so a broken " +
-      "rule never takes down this tab.</p>" +
-      "</div></details>";
-  }
-
-  // The manager is appended below the findings list regardless of whether anything fired,
-  // so a clean dump doesn't hide the one place rules get written and edited.
-  function rulesManager() {
-    var rules = loadCustomRules();
-    var placeholder = 'return d.threads.filter(t => t.state === "BLOCKED").length > 20\n' +
-      '  ? [{ title: "Lots of BLOCKED threads", text: "..." }]\n  : [];';
-    return '<details class="rules-box"' + (rulesBoxOpen ? " open" : "") + ">" +
-      "<summary>Custom rules (" + rules.length + ")</summary>" +
-      '<p class="hint">Saved in this browser, never sent anywhere. ' +
-      "<em>New rule</em> opens the editor and the reference.</p>" +
-      '<div class="rules-list">' + rules.map(ruleRow).join("") +
-      (rules.length ? "" : '<p class="hint">No custom rules yet.</p>') + "</div>" +
-      "<button data-rule-new>+ New rule</button>" +
-      '<div class="rule-form" hidden id="ruleForm" data-editing="">' +
-      ruleDoc() +
-      '<input type="text" id="ruleNameInput" placeholder="Rule name" maxlength="60">' +
-      '<textarea id="ruleCodeInput" rows="7" spellcheck="false" placeholder="' + esc(placeholder) + '"></textarea>' +
-      '<div class="rule-form-actions">' +
-      "<button data-rule-save>Save</button>" +
-      "<button data-rule-cancel>Cancel</button>" +
-      "</div>" +
-      '<p class="rule-error" hidden id="ruleError"></p>' +
-      "</div></details>";
-  }
-
-  function viewFindings(d) {
-    var fs = findings(d);
-    if (!fs.length) {
-      return '<div class="empty">No known problem patterns found. ' +
-             "Not a guarantee — check Pools and Population yourself.</div>" +
-             rulesManager();
+    function ruleRow(r, i) {
+      return '<div class="rule-row">' +
+        '<label class="rule-toggle"><input type="checkbox" data-rule-toggle="' + i + '"' +
+        (r.enabled ? " checked" : "") + ">" + esc(r.name) + "</label>" +
+        '<span class="rule-actions">' +
+        '<button data-rule-edit="' + i + '">Edit</button>' +
+        '<button data-rule-del="' + i + '">Delete</button>' +
+        "</span></div>";
     }
-    var LV = { alert: "Action", warn: "Check" };
-    // The badge legend only earns its space when a badge is actually on screen. Explaining
-    // labels the reader cannot see is how a panel fills up with text nobody reads.
-    var badged = fs.some(function (f) { return f.via; });
-    return (badged
-        ? '<div class="panel-top"><p class="hint">Unlabelled checks are generic. ' +
+
+    function docRows(pairs) {
+      return "<table><tbody>" + pairs.map(function (p) {
+        return "<tr><td>" + p[0] + "</td><td>" + p[1] + "</td></tr>";
+      }).join("") + "</tbody></table>";
+    }
+
+    // Written as field tables rather than prose. The previous version was one dense paragraph
+    // listing the same names, and nobody reads a paragraph looking for "what is t.norm".
+    function ruleDoc() {
+      var example =
+        '// Threads blocked inside our own code, and what most of them are doing\n' +
+        'var mine = d.threads.filter(function (t) {\n' +
+        '  return t.state === "BLOCKED" && t.top.indexOf("com.acme.") === 0;\n' +
+        '});\n' +
+        'if (mine.length < 5) return [];\n\n' +
+        'var top = sortedGroups(groupBy(mine, function (t) { return t.top; }))[0];\n' +
+        'return [{\n' +
+        '  level: "alert",\n' +
+        '  title: nThreads(mine.length) + " blocked in application code",\n' +
+        '  text: "Most of them in " + top.key + ".",\n' +
+        '  items: mine\n' +
+        '}];';
+
+      return '<details class="rule-doc"' + (rulesDocOpen ? " open" : "") + ">" +
+        "<summary>How to write a rule — fields and helpers</summary>" +
+        '<div class="rule-doc-body">' +
+
+        "<p>What you write is the <strong>body</strong> of <code>function (d, helpers)</code> — no " +
+        "wrapper, just the statements, ending in a <code>return</code>. Return one finding object or " +
+        "an array of them. Return nothing, <code>null</code> or <code>[]</code> when this dump does " +
+        "not match — that is the normal way for a rule to stay quiet.</p>" +
+
+        "<p>Every helper is also in scope under its own name, so <code>nThreads(n)</code> and " +
+        "<code>helpers.nThreads(n)</code> are the same call. The example below uses the short form.</p>" +
+
+        "<h4>What to return</h4>" +
+        docRows([
+          ["title", "Required. Headline of the card."],
+          ["text", "Optional. The explanation under it — say what to do next, not just what was found."],
+          ["level", 'Optional. <code>"alert"</code> (red, Action) or <code>"warn"</code> (yellow, Check). Default <code>"warn"</code>.'],
+          ["items", "Optional. Array of threads. Adds the <em>Show threads</em> button with their stacks."]
+        ]) +
+
+        "<h4>d — the loaded dump</h4>" +
+        docRows([
+          ["d.threads", "Array of every thread in the dump. Fields below."],
+          ["d.byState", 'Counts per state: <code>{ RUNNABLE: 12, BLOCKED: 3, … }</code>.'],
+          ["d.deadlock", "The JVM's own deadlock report as text, or <code>null</code> if it printed none."]
+        ]) +
+
+        "<h4>t — one thread</h4>" +
+        docRows([
+          ["t.name", "Name exactly as the dump spells it."],
+          ["t.norm", "Name with instance numbers collapsed to <code>N</code> — use this to group siblings, " +
+          "<code>name</code> to match one specific thread."],
+          ["t.state", 'RUNNABLE, BLOCKED, WAITING, TIMED_WAITING, NEW, TERMINATED, or UNKNOWN when the ' +
+          'dump did not say. Careful: RUNNABLE in a native call means idle, not busy.'],
+          ["t.top", "Topmost frame as a string — what the thread is doing right now. " +
+          "<code>\"(no stack)\"</code> if the dump gave no frames."],
+          ["t.frames", "All frames, top first. Use <code>t.frames.join(\"\\n\")</code> to regex the whole stack."],
+          ["t.waitsFor", "<code>{ name, id, lock }</code> of the thread holding the lock this one waits on, " +
+          "or <code>null</code>. Resolved for both monitors and j.u.c. locks."],
+          ["t.waitingOn", "Id of the lock it is waiting for, or <code>null</code>."],
+          ["t.locksHeld", "Ids of the locks it currently owns."],
+          ["t.id", "Thread id (<code>t@N</code> / <code>#N</code>), or <code>null</code> if absent."],
+          ["t.raw", "The thread's original dump lines, unparsed."],
+        ["t.virtual", "<code>true</code> for a virtual thread. Only a JSON dump from JDK 25+ says; " +
+                      "absent elsewhere, so test it as truthy rather than comparing to false."],
+        ["t.container", "Thread container it belongs to — <code>&lt;root&gt;</code>, a pool, or a " +
+                        "StructuredTaskScope. JSON dumps only; forked tasks have no name, so this is " +
+                        "what identifies them."]
+        ]) +
+
+        "<h4>helpers — the same building blocks the built-in checks use</h4>" +
+        docRows([
+          ["groupBy(arr, fn)", "→ <code>{ key: [items] }</code>, keyed by whatever <code>fn</code> returns."],
+          ["sortedGroups(map)", "→ <code>[{ key, items }]</code>, biggest group first. Feed it a <code>groupBy</code> result."],
+          ["pools(d)", "→ <code>[{ name, items, busy, ratio }]</code> — the thread groups behind the Pools tab. " +
+          "<code>ratio</code> is 1 when every worker is busy."],
+          ["poolOf(t)", "→ the group name for a thread (its <code>norm</code>)."],
+          ["isIdleWorker(t)", "→ <code>true</code> for a worker parked on its task queue or an event loop — " +
+          "waiting for work, not doing it."],
+          ["nThreads(n)", '→ <code>"1 thread"</code> / <code>"5 threads"</code>. For titles.']
+        ]) +
+
+        "<h4>Example</h4>" +
+        "<pre>" + esc(example) + "</pre>" +
+
+        "<p>Code runs synchronously — <code>await</code> and <code>fetch</code> will not work, and only " +
+        "Dump A is visible, not the comparison dump. A syntax error is caught when you press Save; " +
+        "anything that throws at runtime becomes its own finding card with the message, so a broken " +
+        "rule never takes down this tab.</p>" +
+        "</div></details>";
+    }
+
+    // The manager is appended below the findings list regardless of whether anything fired,
+    // so a clean dump doesn't hide the one place rules get written and edited.
+    function rulesManager() {
+      var rules = loadCustomRules();
+      var placeholder = 'return d.threads.filter(t => t.state === "BLOCKED").length > 20\n' +
+        '  ? [{ title: "Lots of BLOCKED threads", text: "..." }]\n  : [];';
+      return '<details class="rules-box"' + (rulesBoxOpen ? " open" : "") + ">" +
+        "<summary>Custom rules (" + rules.length + ")</summary>" +
+        '<p class="hint">Saved in this browser, never sent anywhere. ' +
+        "<em>New rule</em> opens the editor and the reference.</p>" +
+        '<div class="rules-list">' + rules.map(ruleRow).join("") +
+        (rules.length ? "" : '<p class="hint">No custom rules yet.</p>') + "</div>" +
+        "<button data-rule-new>+ New rule</button>" +
+        '<div class="rule-form" hidden id="ruleForm" data-editing="">' +
+        ruleDoc() +
+        '<input type="text" id="ruleNameInput" placeholder="Rule name" maxlength="60">' +
+        '<textarea id="ruleCodeInput" rows="7" spellcheck="false" placeholder="' + esc(placeholder) + '"></textarea>' +
+        '<div class="rule-form-actions">' +
+        "<button data-rule-save>Save</button>" +
+        "<button data-rule-cancel>Cancel</button>" +
+        "</div>" +
+        '<p class="rule-error" hidden id="ruleError"></p>' +
+        "</div></details>";
+    }
+
+    function viewFindings(d) {
+      var fs = findings(d);
+      if (!fs.length) {
+        return '<div class="empty">No known problem patterns found. ' +
+          "Not a guarantee — check Pools and Population yourself.</div>" +
+          rulesManager();
+      }
+      var LV = {alert: "Action", warn: "Check"};
+      // The badge legend only earns its space when a badge is actually on screen. Explaining
+      // labels the reader cannot see is how a panel fills up with text nobody reads.
+      var badged = fs.some(function (f) {
+        return f.via;
+      });
+      return (badged
+          ? '<div class="panel-top"><p class="hint">Unlabelled checks are generic. ' +
           "<b>signature</b> matches one library, <b>custom</b> came from your rules below.</p></div>"
-        : "") +
-      '<div class="findings">' + fs.map(function (f, i) {
-        return '<div class="finding f-' + f.level + '">' +
-          '<div class="f-head"><span class="f-level">' + LV[f.level] + "</span>" +
-          '<span class="f-title">' + esc(f.title) + "</span>" +
-          (f.via ? '<span class="f-via">' + (f.custom ? "custom: " : "signature: ") + esc(f.via) + "</span>" : "") + "</div>" +
-          '<p class="f-text">' + esc(f.text) + "</p>" +
-          (f.pre
-            ? '<pre class="stack">' + esc(f.pre) + "</pre>"
-            : f.items.length
-              ? '<div class="f-more"><button class="f-toggle" data-f="' + i + '">Show threads (' +
+          : "") +
+        '<div class="findings">' + fs.map(function (f, i) {
+          return '<div class="finding f-' + f.level + '">' +
+            '<div class="f-head"><span class="f-level">' + LV[f.level] + "</span>" +
+            '<span class="f-title">' + esc(f.title) + "</span>" +
+            (f.via ? '<span class="f-via">' + (f.custom ? "custom: " : "signature: ") + esc(f.via) + "</span>" : "") + "</div>" +
+            '<p class="f-text">' + esc(f.text) + "</p>" +
+            (f.pre
+              ? '<pre class="stack">' + esc(f.pre) + "</pre>"
+              : f.items.length
+                ? '<div class="f-more"><button class="f-toggle" data-f="' + i + '">Show threads (' +
                 f.items.length + ")</button></div>" +
                 '<div hidden data-fbody="' + i + '">' + subTable(f.items, 80) + "</div>"
-              : "") +
-          "</div>";
-      }).join("") + "</div>" +
-      rulesManager();
-  }
+                : "") +
+            "</div>";
+        }).join("") + "</div>" +
+        rulesManager();
+    }
 
-  // ------------------------------------------------------------------ summary
+    // ------------------------------------------------------------------ summary
 
-  function stateColor(s) {
-    return { BLOCKED: "--st-blocked", RUNNABLE: "--st-runnable", WAITING: "--st-waiting", TIMED_WAITING: "--st-timed" }[s] || "--muted";
-  }
+    function stateColor(s) {
+      return {
+        BLOCKED: "--st-blocked",
+        RUNNABLE: "--st-runnable",
+        WAITING: "--st-waiting",
+        TIMED_WAITING: "--st-timed"
+      }[s] || "--muted";
+    }
 
-  function renderSummary() {
-    var d = dumps.A;
-    var box = document.getElementById("summary");
-    if (!d) { box.hidden = true; return; }
-    box.hidden = false;
+    function renderSummary() {
+      var d = dumps.A;
+      var box = document.getElementById("summary");
+      if (!d) {
+        box.hidden = true;
+        return;
+      }
+      box.hidden = false;
 
-    var total = d.threads.length;
-    var tiles = [
-      { k: "threads", v: total },
-      { k: "blocked", v: d.byState.BLOCKED || 0 },
-      { k: "runnable but idle", v: d.threads.filter(isNativeIdle).length },
-      { k: "name groups", v: Object.keys(groupBy(d.threads, function (t) { return t.norm; })).length }
+      var total = d.threads.length;
+      var tiles = [
+        {k: "threads", v: total},
+        {k: "blocked", v: d.byState.BLOCKED || 0},
+        {k: "runnable but idle", v: d.threads.filter(isNativeIdle).length},
+        {
+          k: "name groups", v: Object.keys(groupBy(d.threads, function (t) {
+            return t.norm;
+          })).length
+        }
+      ];
+      if (dumps.B) tiles.push({k: "dump B", v: dumps.B.threads.length});
+
+      document.getElementById("tiles").innerHTML = tiles.map(function (t) {
+        return '<div class="tile"><div class="k">' + esc(t.k) + '</div><div class="v">' + t.v + "</div></div>";
+      }).join("");
+
+      var present = statesPresent(d);
+
+      document.getElementById("statebar").innerHTML = present.map(function (s) {
+        var n = d.byState[s] || 0;
+        if (!n) return "";
+        return '<div style="width:' + (n / total * 100) + "%;background:var(" + stateColor(s) + ')" title="' + s + ": " + n + '"></div>';
+      }).join("");
+
+      document.getElementById("legend").innerHTML = present.map(function (s) {
+        return '<span><i class="dot" style="background:var(' + stateColor(s) + ')"></i>' + s + " — " + d.byState[s] + "</span>";
+      }).join("");
+    }
+
+    // ------------------------------------------------------------------ views
+
+    var TABS = [
+      {id: "findings", label: "Findings"},
+      {id: "pools", label: "Pools"},
+      {id: "population", label: "Population"},
+      {id: "topframe", label: "Top frame"},
+      {id: "states", label: "States"},
+      {id: "order", label: "Creation order"},
+      {id: "locks", label: "Locks"},
+      {id: "search", label: "Stack search"},
+      {id: "diff", label: "Compare"}
     ];
-    if (dumps.B) tiles.push({ k: "dump B", v: dumps.B.threads.length });
 
-    document.getElementById("tiles").innerHTML = tiles.map(function (t) {
-      return '<div class="tile"><div class="k">' + esc(t.k) + '</div><div class="v">' + t.v + "</div></div>";
-    }).join("");
-
-    var present = statesPresent(d);
-
-    document.getElementById("statebar").innerHTML = present.map(function (s) {
-      var n = d.byState[s] || 0;
-      if (!n) return "";
-      return '<div style="width:' + (n / total * 100) + "%;background:var(" + stateColor(s) + ')" title="' + s + ": " + n + '"></div>';
-    }).join("");
-
-    document.getElementById("legend").innerHTML = present.map(function (s) {
-      return '<span><i class="dot" style="background:var(' + stateColor(s) + ')"></i>' + s + " — " + d.byState[s] + "</span>";
-    }).join("");
-  }
-
-  // ------------------------------------------------------------------ views
-
-  var TABS = [
-    { id: "findings",   label: "Findings" },
-    { id: "pools",      label: "Pools" },
-    { id: "population", label: "Population" },
-    { id: "topframe",   label: "Top frame" },
-    { id: "states",     label: "States" },
-    { id: "order",      label: "Creation order" },
-    { id: "locks",      label: "Locks" },
-    { id: "search",     label: "Stack search" },
-    { id: "diff",       label: "Compare" }
-  ];
-
-  function renderTabs() {
-    var el = document.getElementById("tabs");
-    el.hidden = !dumps.A;
-    el.innerHTML = TABS.map(function (t) {
-      return '<button class="tab" role="tab" data-view="' + t.id + '" aria-selected="' + (t.id === view) + '">' + t.label + "</button>";
-    }).join("");
-  }
-
-  // The chip carries its own explanation on hover, so the meaning is reachable from every
-  // table without leaving for the reference.
-  function stateChip(s) {
-    var doc = STATE_DOC[s];
-    var tip = doc ? ' title="' + esc(doc.what + " " + doc.note) + '"' : "";
-    return '<span class="state s-' + s + '"' + tip + ">" + s + "</span>";
-  }
-
-  function threadRows(items, limit) {
-    var shown = items.slice(0, limit || 400);
-    var html = shown.map(function (t, i) {
-      return '<tr class="clickable" data-stack="' + i + '">' +
-        '<td class="n">' + (t.id === null ? "—" : t.id) + "</td>" +
-        '<td class="m">' + esc(t.name) + "</td>" +
-        "<td>" + stateChip(t.state) + "</td>" +
-        '<td class="m">' + esc(t.top) + "</td></tr>" +
-        '<tr hidden data-body="' + i + '"><td colspan="4" style="padding:0"><pre class="stack">' + stackHtml(t) + "</pre></td></tr>";
-    }).join("");
-    if (items.length > shown.length) {
-      html += '<tr><td colspan="4" class="hint" style="padding:.6rem .9rem">Showing ' + shown.length + " of " + items.length + ".</td></tr>";
+    function renderTabs() {
+      var el = document.getElementById("tabs");
+      el.hidden = !dumps.A;
+      el.innerHTML = TABS.map(function (t) {
+        return '<button class="tab" role="tab" data-view="' + t.id + '" aria-selected="' + (t.id === view) + '">' + t.label + "</button>";
+      }).join("");
     }
-    return html;
-  }
 
-  // Expanded thread list: its own header and border, so it does not read as a continuation
-  // of the table it sits inside.
-  function subTable(items, limit) {
-    return '<div class="sub"><div class="scroll"><table>' +
-      "<thead><tr><th>t@</th><th>Thread name</th><th>State</th><th>Top frame</th></tr></thead>" +
-      "<tbody>" + threadRows(items, limit) + "</tbody></table></div></div>";
-  }
+    // The chip carries its own explanation on hover, so the meaning is reachable from every
+    // table without leaving for the reference.
+    function stateChip(s) {
+      var doc = STATE_DOC[s];
+      var tip = doc ? ' title="' + esc(doc.what + " " + doc.note) + '"' : "";
+      return '<span class="state s-' + s + '"' + tip + ">" + s + "</span>";
+    }
 
-  function stackHtml(t) {
-    return t.raw.map(function (l) {
-      var e = esc(l);
-      return /^\s*-\s/.test(l) ? '<span class="lock">' + e + "</span>" : e;
-    }).join("\n");
-  }
+    function threadRows(items, limit) {
+      var shown = items.slice(0, limit || 400);
+      var html = shown.map(function (t, i) {
+        return '<tr class="clickable" data-stack="' + i + '">' +
+          '<td class="n">' + (t.id === null ? "—" : t.id) + "</td>" +
+          '<td class="m">' + esc(t.name) + "</td>" +
+          "<td>" + stateChip(t.state) + "</td>" +
+          '<td class="m">' + esc(t.top) + "</td></tr>" +
+          '<tr hidden data-body="' + i + '"><td colspan="4" style="padding:0"><pre class="stack">' + stackHtml(t) + "</pre></td></tr>";
+      }).join("");
+      if (items.length > shown.length) {
+        html += '<tr><td colspan="4" class="hint" style="padding:.6rem .9rem">Showing ' + shown.length + " of " + items.length + ".</td></tr>";
+      }
+      return html;
+    }
 
-  function tableWrap(head, body, note) {
-    return (note ? '<div class="panel-top"><p class="hint">' + note + "</p></div>" : "") +
-      '<div class="scroll"><table><thead><tr>' + head + "</tr></thead><tbody>" + body + "</tbody></table></div>";
-  }
+    // Expanded thread list: its own header and border, so it does not read as a continuation
+    // of the table it sits inside.
+    function subTable(items, limit) {
+      return '<div class="sub"><div class="scroll"><table>' +
+        "<thead><tr><th>t@</th><th>Thread name</th><th>State</th><th>Top frame</th></tr></thead>" +
+        "<tbody>" + threadRows(items, limit) + "</tbody></table></div></div>";
+    }
 
-  function statesOf(items) {
-    var c = countBy(items, function (t) { return t.state; });
-    return '<span class="states">' + Object.keys(c).sort().map(function (s) {
-      return '<span class="state s-' + s + '">' + s + " " + c[s] + "</span>";
-    }).join("") + "</span>";
-  }
+    function stackHtml(t) {
+      return t.raw.map(function (l) {
+        var e = esc(l);
+        return /^\s*-\s/.test(l) ? '<span class="lock">' + e + "</span>" : e;
+      }).join("\n");
+    }
 
-  function viewPopulation(d) {
-    var groups = sortedGroups(groupBy(d.threads, function (t) { return t.norm; }));
-    if (!sortDesc) groups.reverse();
-    var max = groups.length ? Math.max.apply(null, groups.map(function (g) { return g.items.length; })) : 1;
+    function tableWrap(head, body, note) {
+      return (note ? '<div class="panel-top"><p class="hint">' + note + "</p></div>" : "") +
+        '<div class="scroll"><table><thead><tr>' + head + "</tr></thead><tbody>" + body + "</tbody></table></div>";
+    }
 
-    var body = groups.map(function (g, i) {
-      return '<tr class="clickable" data-group="' + i + '">' +
-        '<td class="n">' + g.items.length + "</td>" +
-        '<td style="width:7rem"><div class="bar" style="width:' + (g.items.length / max * 100) + '%"></div></td>' +
-        '<td class="m">' + esc(g.key) + "</td>" +
-        "<td>" + statesOf(g.items) + "</td></tr>" +
-        '<tr hidden data-groupbody="' + i + '"><td colspan="4" style="padding:0">' +
-        subTable(g.items, 60) + "</td></tr>";
-    }).join("");
+    function statesOf(items) {
+      var c = countBy(items, function (t) {
+        return t.state;
+      });
+      return '<span class="states">' + Object.keys(c).sort().map(function (s) {
+        return '<span class="state s-' + s + '">' + s + " " + c[s] + "</span>";
+      }).join("") + "</span>";
+    }
 
-    return tableWrap(
-      '<th class="sortable">Count</th><th></th><th>Name (digits → N)</th><th>States</th>',
-      body,
-      "An outsized group is usually the anomaly. Rows expand."
-    );
-  }
+    /*Container names carry boilerplate that says nothing: the implementing class after the slash
+    is always some ThreadContainer, and j.u.c is the package every executor lives in. Dropping
+    both leaves "ForkJoinPool-1" and "ScheduledThreadPoolExecutor@6b4" — still exact, and short
+    enough to sit in a table column.*/
+    function shortContainer(name) {
+      if (!name) return "—";
+      return name.replace(/\/[\w.$]*ThreadContainer.*$/, "").replace(/^java\.util\.concurrent\./, "");
+    }
 
-  function viewTopFrame(d) {
-    var groups = sortedGroups(groupBy(d.threads, function (t) { return t.top; }));
-    var body = groups.map(function (g, i) {
-      return '<tr class="clickable" data-group="' + i + '">' +
-        '<td class="n">' + g.items.length + "</td>" +
-        '<td class="m">' + esc(g.key) + "</td>" +
-        "<td>" + statesOf(g.items) + "</td></tr>" +
-        '<tr hidden data-groupbody="' + i + '"><td colspan="3" style="padding:0">' +
-        subTable(g.items, 60) + "</td></tr>";
-    }).join("");
-    return tableWrap("<th>Count</th><th>Top frame</th><th>States</th>", body,
-      "Where threads are standing right now.");
-  }
+    function viewPopulation(d) {
+      /*Tasks forked into a StructuredTaskScope carry no name at all, so grouping by name alone
+      collapses a whole task tree into one "(unnamed)" row. For those the container is the
+      identity — it is what says which scope the work belongs to — so it joins the key. Named
+      threads are unaffected, and the Container column then does the distinguishing on screen.*/
+      var groups = sortedGroups(groupBy(d.threads, function (t) {
+        return t.name === UNNAMED && t.container ? t.norm + " " + t.container : t.norm;
+      }));
+      if (!sortDesc) groups.reverse();
+      var max = groups.length ? Math.max.apply(null, groups.map(function (g) {
+        return g.items.length;
+      })) : 1;
 
-  function viewStates(d) {
-    var groups = sortedGroups(groupBy(d.threads, function (t) { return t.state; }));
-    var body = groups.map(function (g, i) {
-      return '<tr class="clickable" data-group="' + i + '">' +
-        '<td class="n">' + g.items.length + "</td>" +
-        "<td>" + stateChip(g.key) + "</td>" +
-        '<td class="m">' + esc(sortedGroups(groupBy(g.items, function (t) { return t.norm; }))[0].key) + " …</td></tr>" +
-        '<tr hidden data-groupbody="' + i + '"><td colspan="3" style="padding:0">' +
-        subTable(g.items, 200) + "</td></tr>";
-    }).join("");
-    // No hint strip here: the reference below carries the same caveats in full, and saying
-    // it twice on one screen only teaches people to skip both.
-    return tableWrap("<th>Count</th><th>State</th><th>Most common group</th>", body) +
-      stateReference();
-  }
+      /*Only a JSON dump from JDK 25+ knows which threads are virtual; classic text says nothing,
+      and neither does JDK 21's JSON. The column appears only when the answer is in the data —
+      a blank one would read as "all platform", which is a different claim from "not stated".*/
+      var hasVirtual = d.threads.some(function (t) {
+        return t.virtual;
+      });
 
-  // Always lists every Thread.State, not only the ones this dump happens to contain — it is
-  // a reference, and the value of a reference is that it answers the question before you
-  // have to look it up elsewhere.
-  function stateReference() {
-    var rows = STATE_ORDER.map(function (s) {
-      return "<tr><td>" + stateChip(s) + "</td>" +
-        '<td class="ref-what">' + esc(STATE_DOC[s].what) + "</td>" +
-        '<td class="ref-note">' + esc(STATE_DOC[s].note) + "</td></tr>";
-    }).join("");
+      /*Thread containers are what JEP 425 added the new dump format for: a flat list stops being
+      readable at thousands of virtual threads, a grouping does not. Shown only when the dump
+      actually splits into more than one — otherwise it is a column repeating <root>.*/
+      var containers = {};
+      d.threads.forEach(function (t) {
+        if (t.container) containers[t.container] = 1;
+      });
+      var hasContainers = Object.keys(containers).length > 1;
+      var cols = 4 + (hasVirtual ? 1 : 0) + (hasContainers ? 1 : 0);
 
-    return '<div class="stateref">' +
-      '<div class="stateref-head">Thread.State reference</div>' +
-      '<div class="scroll"><table><tbody>' + rows + "</tbody></table></div></div>";
-  }
+      var body = groups.map(function (g, i) {
+        var virt = g.items.filter(function (t) {
+          return t.virtual;
+        }).length;
+        var kind = virt === 0 ? "platform" : virt === g.items.length ? "virtual" : virt + " virtual";
+        var own = Object.keys(groupBy(g.items, function (t) {
+          return t.container || "";
+        }));
+        var where = own.length === 1 ? shortContainer(own[0]) : own.length + " containers";
+        return '<tr class="clickable" data-group="' + i + '">' +
+          '<td class="n">' + g.items.length + "</td>" +
+          '<td style="width:7rem"><div class="bar" style="width:' + (g.items.length / max * 100) + '%"></div></td>' +
+          '<td class="m">' + esc(g.items[0].norm) + "</td>" +
+          (hasVirtual ? '<td class="kind' + (virt ? " kind-virtual" : "") + '">' + kind + "</td>" : "") +
+          (hasContainers ? '<td class="kind">' + esc(where) + "</td>" : "") +
+          "<td>" + statesOf(g.items) + "</td></tr>" +
+          '<tr hidden data-groupbody="' + i + '"><td colspan="' + cols + '" style="padding:0">' +
+          subTable(g.items, 60) + "</td></tr>";
+      }).join("");
 
-  function viewOrder(d) {
-    var withId = d.threads.filter(function (t) { return t.id !== null; })
-      .sort(function (a, b) { return a.id - b.id; });
-    if (!withId.length) return '<div class="empty">This dump has no thread ids.</div>';
-    return tableWrap("<th>t@</th><th>Name</th><th>State</th><th>Top frame</th>",
-      threadRows(withId, 2000),
-      "Lower id = created earlier. Adjacent ids were created together, which dates a leak.");
-  }
+      return tableWrap(
+        '<th class="sortable">Count</th><th></th><th>Name (digits → N)</th>' +
+        (hasVirtual ? "<th>Kind</th>" : "") +
+        (hasContainers ? "<th>Container</th>" : "") + "<th>States</th>",
+        body,
+        "An outsized group is usually the anomaly. Rows expand."
+      );
+    }
 
-  function viewLocks(d) {
-    var waiters = d.threads.filter(function (t) { return t.waitsFor; });
-    if (!waiters.length) return '<div class="empty">No lock contention in this dump.</div>';
+    function viewTopFrame(d) {
+      var groups = sortedGroups(groupBy(d.threads, function (t) {
+        return t.top;
+      }));
+      var body = groups.map(function (g, i) {
+        return '<tr class="clickable" data-group="' + i + '">' +
+          '<td class="n">' + g.items.length + "</td>" +
+          '<td class="m">' + esc(g.key) + "</td>" +
+          "<td>" + statesOf(g.items) + "</td></tr>" +
+          '<tr hidden data-groupbody="' + i + '"><td colspan="3" style="padding:0">' +
+          subTable(g.items, 60) + "</td></tr>";
+      }).join("");
+      return tableWrap("<th>Count</th><th>Top frame</th><th>States</th>", body,
+        "Where threads are standing right now.");
+    }
 
-    var groups = sortedGroups(groupBy(waiters, function (t) { return t.waitsFor.name + " t@" + t.waitsFor.id; }));
+    function viewStates(d) {
+      var groups = sortedGroups(groupBy(d.threads, function (t) {
+        return t.state;
+      }));
+      var body = groups.map(function (g, i) {
+        return '<tr class="clickable" data-group="' + i + '">' +
+          '<td class="n">' + g.items.length + "</td>" +
+          "<td>" + stateChip(g.key) + "</td>" +
+          '<td class="m">' + esc(sortedGroups(groupBy(g.items, function (t) {
+            return t.norm;
+          }))[0].key) + " …</td></tr>" +
+          '<tr hidden data-groupbody="' + i + '"><td colspan="3" style="padding:0">' +
+          subTable(g.items, 200) + "</td></tr>";
+      }).join("");
+      // No hint strip here: the reference below carries the same caveats in full, and saying
+      // it twice on one screen only teaches people to skip both.
+      return tableWrap("<th>Count</th><th>State</th><th>Most common group</th>", body) +
+        stateReference();
+    }
 
-    var body = groups.map(function (g, i) {
-      var owner = d.threads.filter(function (t) { return t.id === g.items[0].waitsFor.id; })[0];
-      return '<tr class="clickable" data-group="' + i + '">' +
-        '<td class="n">' + g.items.length + "</td>" +
-        '<td class="m">' + esc(g.key) + "</td>" +
-        '<td class="m">' + esc(owner ? owner.top : "holder not in this dump") + "</td></tr>" +
-        '<tr hidden data-groupbody="' + i + '"><td colspan="3" style="padding:0">' +
-        subTable(g.items, 60) + "</td></tr>";
-    }).join("");
+    /*Always lists every Thread.State, not only the ones this dump happens to contain — it is
+    a reference, and the value of a reference is that it answers the question before you
+    have to look it up elsewhere.*/
+    function stateReference() {
+      var rows = STATE_ORDER.map(function (s) {
+        return "<tr><td>" + stateChip(s) + "</td>" +
+          '<td class="ref-what">' + esc(STATE_DOC[s].what) + "</td>" +
+          '<td class="ref-note">' + esc(STATE_DOC[s].note) + "</td></tr>";
+      }).join("");
 
-    return tableWrap("<th>Waiting</th><th>Lock holder</th><th>Holder is in</th>", body,
-      "Covers both monitors and j.u.c locks; for the latter the owner is resolved through the " +
-      "Locked ownable synchronizers section. Check the holder first — that is the bottleneck.");
-  }
+      return '<div class="stateref">' +
+        '<div class="stateref-head">Thread.State reference</div>' +
+        '<div class="scroll"><table><tbody>' + rows + "</tbody></table></div></div>";
+    }
 
-  function viewSearch() {
-    return '<div class="panel-top">' +
-      '<input type="text" id="q" placeholder="regex over stacks, e.g. socketRead0|getConnection" value="' + esc(searchQuery) + '">' +
-      '<span class="hint" id="qcount"></span></div><div id="qres"></div>';
-  }
+    function viewOrder(d) {
+      var withId = d.threads.filter(function (t) {
+        return t.id !== null;
+      })
+        .sort(function (a, b) {
+          return a.id - b.id;
+        });
+      if (!withId.length) return '<div class="empty">This dump has no thread ids.</div>';
+      return tableWrap("<th>t@</th><th>Name</th><th>State</th><th>Top frame</th>",
+        threadRows(withId, 2000),
+        "Lower id = created earlier. Adjacent ids were created together, which dates a leak.");
+    }
 
-  function runSearch() {
-    var d = dumps.A;
-    var out = document.getElementById("qres");
-    var cnt = document.getElementById("qcount");
-    if (!out) return;
-    if (!searchQuery) { out.innerHTML = '<div class="empty">Enter a pattern.</div>'; cnt.textContent = ""; return; }
-    var re;
-    try { re = new RegExp(searchQuery, "i"); }
-    catch (e) { out.innerHTML = '<div class="empty">Invalid pattern: ' + esc(e.message) + "</div>"; return; }
+    function viewLocks(d) {
+      var waiters = d.threads.filter(function (t) {
+        return t.waitsFor;
+      });
+      if (!waiters.length) return '<div class="empty">No lock contention in this dump.</div>';
 
-    var hits = d.threads.filter(function (t) { return re.test(t.raw.join("\n")); });
-    cnt.textContent = "matches: " + hits.length;
-    out.innerHTML = hits.length
-      ? '<div class="scroll"><table><thead><tr><th>t@</th><th>Name</th><th>State</th><th>Top frame</th></tr></thead><tbody>' +
+      var groups = sortedGroups(groupBy(waiters, function (t) {
+        return t.waitsFor.name + " t@" + t.waitsFor.id;
+      }));
+
+      var body = groups.map(function (g, i) {
+        var owner = d.threads.filter(function (t) {
+          return t.id === g.items[0].waitsFor.id;
+        })[0];
+        return '<tr class="clickable" data-group="' + i + '">' +
+          '<td class="n">' + g.items.length + "</td>" +
+          '<td class="m">' + esc(g.key) + "</td>" +
+          '<td class="m">' + esc(owner ? owner.top : "holder not in this dump") + "</td></tr>" +
+          '<tr hidden data-groupbody="' + i + '"><td colspan="3" style="padding:0">' +
+          subTable(g.items, 60) + "</td></tr>";
+      }).join("");
+
+      return tableWrap("<th>Waiting</th><th>Lock holder</th><th>Holder is in</th>", body,
+        "Covers both monitors and j.u.c locks, resolving the owner when the dump names it only " +
+        "indirectly. Check the holder first — that is the bottleneck.");
+    }
+
+    function viewSearch() {
+      return '<div class="panel-top">' +
+        '<input type="text" id="q" placeholder="regex over stacks, e.g. socketRead0|getConnection" value="' + esc(searchQuery) + '">' +
+        '<span class="hint" id="qcount"></span></div><div id="qres"></div>';
+    }
+
+    function runSearch() {
+      var d = dumps.A;
+      var out = document.getElementById("qres");
+      var cnt = document.getElementById("qcount");
+      if (!out) return;
+      if (!searchQuery) {
+        out.innerHTML = '<div class="empty">Enter a pattern.</div>';
+        cnt.textContent = "";
+        return;
+      }
+      var re;
+      try {
+        re = new RegExp(searchQuery, "i");
+      } catch (e) {
+        out.innerHTML = '<div class="empty">Invalid pattern: ' + esc(e.message) + "</div>";
+        return;
+      }
+
+      var hits = d.threads.filter(function (t) {
+        return re.test(t.raw.join("\n"));
+      });
+      cnt.textContent = "matches: " + hits.length;
+      out.innerHTML = hits.length
+        ? '<div class="scroll"><table><thead><tr><th>t@</th><th>Name</th><th>State</th><th>Top frame</th></tr></thead><tbody>' +
         threadRows(hits, 300) + "</tbody></table></div>"
-      : '<div class="empty">No matches.</div>';
-  }
+        : '<div class="empty">No matches.</div>';
+    }
 
-  function viewDiff() {
-    if (!dumps.B) return '<div class="empty">Load a second dump to compare.</div>';
-    var a = countBy(dumps.A.threads, function (t) { return t.norm; });
-    var b = countBy(dumps.B.threads, function (t) { return t.norm; });
-    var keys = Object.keys(a).concat(Object.keys(b)).filter(function (v, i, s) { return s.indexOf(v) === i; });
+    function viewDiff() {
+      if (!dumps.B) return '<div class="empty">Load a second dump to compare.</div>';
+      var a = countBy(dumps.A.threads, function (t) {
+        return t.norm;
+      });
+      var b = countBy(dumps.B.threads, function (t) {
+        return t.norm;
+      });
+      var keys = Object.keys(a).concat(Object.keys(b)).filter(function (v, i, s) {
+        return s.indexOf(v) === i;
+      });
 
-    var rows = keys.map(function (k) {
-      return { key: k, a: a[k] || 0, b: b[k] || 0, d: (b[k] || 0) - (a[k] || 0) };
-    }).sort(function (x, y) { return Math.abs(y.d) - Math.abs(x.d) || y.a - x.a; });
+      var rows = keys.map(function (k) {
+        return {key: k, a: a[k] || 0, b: b[k] || 0, d: (b[k] || 0) - (a[k] || 0)};
+      }).sort(function (x, y) {
+        return Math.abs(y.d) - Math.abs(x.d) || y.a - x.a;
+      });
 
-    var body = rows.map(function (r) {
-      var cls = r.d > 0 ? "delta-up" : r.d < 0 ? "delta-down" : "";
-      var sign = r.d > 0 ? "+" : "";
-      return '<tr><td class="n">' + r.a + '</td><td class="n">' + r.b + "</td>" +
-        '<td class="n ' + cls + '">' + (r.d ? sign + r.d : "·") + "</td>" +
-        '<td class="m">' + esc(r.key) + "</td></tr>";
-    }).join("");
+      var body = rows.map(function (r) {
+        var cls = r.d > 0 ? "delta-up" : r.d < 0 ? "delta-down" : "";
+        var sign = r.d > 0 ? "+" : "";
+        return '<tr><td class="n">' + r.a + '</td><td class="n">' + r.b + "</td>" +
+          '<td class="n ' + cls + '">' + (r.d ? sign + r.d : "·") + "</td>" +
+          '<td class="m">' + esc(r.key) + "</td></tr>";
+      }).join("");
 
-    return tableWrap("<th>A</th><th>B</th><th>Δ</th><th>Thread group</th>", body,
-      "Red grew in B, green went away. This is how you confirm a fix landed.");
-  }
+      return tableWrap("<th>A</th><th>B</th><th>Δ</th><th>Thread group</th>", body,
+        "Red grew in B, green went away. This is how you confirm a fix landed.");
+    }
 
-  // ------------------------------------------------------------------ render
+    // ------------------------------------------------------------------ render
 
-  function render() {
-    var panel = document.getElementById("panel");
-    if (!dumps.A) { panel.innerHTML = '<div class="empty">Load a dump to start.</div>'; return; }
-    var d = dumps.A;
-    var html;
-    // A throwing view used to leave the assignment below unreached, so the panel kept the
-    // previous tab's content — Findings showing the Pools table, with no clue why. Worse, on
-    // Findings it also swallowed the rules editor, so a bad rule locked you out of the one
-    // screen that can delete it. Render the failure instead, and keep that editor reachable.
-    try {
-      switch (view) {
-        case "findings":   html = viewFindings(d); break;
-        case "pools":      html = viewPools(d); break;
-        case "population": html = viewPopulation(d); break;
-        case "topframe":   html = viewTopFrame(d); break;
-        case "states":     html = viewStates(d); break;
-        case "order":      html = viewOrder(d); break;
-        case "locks":      html = viewLocks(d); break;
-        case "search":     html = viewSearch(); break;
-        case "diff":       html = viewDiff(); break;
+    function render() {
+      var panel = document.getElementById("panel");
+      if (!dumps.A) {
+        panel.innerHTML = '<div class="empty">Load a dump to start.</div>';
+        return;
       }
-    } catch (err) {
-      html = '<div class="empty">This tab failed to render: ' +
-        esc(String((err && err.message) || err)) + "</div>" +
-        (view === "findings" ? rulesManager() : "");
-    }
-    panel.innerHTML = html;
-    if (view === "search") runSearch();
-
-    // <details> loses its open/closed state on every innerHTML replacement; track it
-    // ourselves so saving a rule doesn't slam the box shut on you. The toggle event does
-    // not bubble, so the nested reference needs its own listener.
-    var rb = panel.querySelector(".rules-box");
-    if (rb) rb.addEventListener("toggle", function () { rulesBoxOpen = rb.open; });
-    var rd = panel.querySelector(".rule-doc");
-    if (rd) rd.addEventListener("toggle", function () { rulesDocOpen = rd.open; });
-  }
-
-  // ------------------------------------------------------------------ events
-
-  document.getElementById("tabs").addEventListener("click", function (e) {
-    var b = e.target.closest("[data-view]");
-    if (!b) return;
-    view = b.dataset.view;
-    renderTabs();
-    render();
-  });
-
-  document.getElementById("panel").addEventListener("click", function (e) {
-    if (e.target.closest("#q")) return;
-
-    var th = e.target.closest("th.sortable");
-    if (th) { sortDesc = !sortDesc; render(); return; }
-
-    var ft = e.target.closest("[data-f]");
-    if (ft) {
-      var fb = document.querySelector('[data-fbody="' + ft.dataset.f + '"]');
-      if (fb) {
-        fb.hidden = !fb.hidden;
-        ft.textContent = (fb.hidden ? "Show" : "Hide") + ft.textContent.slice(ft.textContent.indexOf(" threads"));
+      var d = dumps.A;
+      var html;
+      /*A throwing view used to leave the assignment below unreached, so the panel kept the
+      previous tab's content — Findings showing the Pools table, with no clue why. Worse, on
+      Findings it also swallowed the rules editor, so a bad rule locked you out of the one
+      screen that can delete it. Render the failure instead, and keep that editor reachable.*/
+      try {
+        switch (view) {
+          case "findings":
+            html = viewFindings(d);
+            break;
+          case "pools":
+            html = viewPools(d);
+            break;
+          case "population":
+            html = viewPopulation(d);
+            break;
+          case "topframe":
+            html = viewTopFrame(d);
+            break;
+          case "states":
+            html = viewStates(d);
+            break;
+          case "order":
+            html = viewOrder(d);
+            break;
+          case "locks":
+            html = viewLocks(d);
+            break;
+          case "search":
+            html = viewSearch();
+            break;
+          case "diff":
+            html = viewDiff();
+            break;
+        }
+      } catch (err) {
+        html = '<div class="empty">This tab failed to render: ' +
+          esc(String((err && err.message) || err)) + "</div>" +
+          (view === "findings" ? rulesManager() : "");
       }
-      return;
+      panel.innerHTML = html;
+      if (view === "search") runSearch();
+
+      /*<details> loses its open/closed state on every innerHTML replacement; track it
+      ourselves so saving a rule doesn't slam the box shut on you. The toggle event does
+      not bubble, so the nested reference needs its own listener.*/
+      var rb = panel.querySelector(".rules-box");
+      if (rb) rb.addEventListener("toggle", function () {
+        rulesBoxOpen = rb.open;
+      });
+      var rd = panel.querySelector(".rule-doc");
+      if (rd) rd.addEventListener("toggle", function () {
+        rulesDocOpen = rd.open;
+      });
     }
 
-    var ruleNewBtn = e.target.closest("[data-rule-new]");
-    if (ruleNewBtn) {
-      var newForm = document.getElementById("ruleForm");
-      newForm.dataset.editing = "new";
-      document.getElementById("ruleNameInput").value = "";
-      document.getElementById("ruleCodeInput").value = "";
-      document.getElementById("ruleError").hidden = true;
-      newForm.hidden = false;
-      document.getElementById("ruleNameInput").focus();
-      return;
-    }
+    // ------------------------------------------------------------------ events
 
-    var ruleEditBtn = e.target.closest("[data-rule-edit]");
-    if (ruleEditBtn) {
-      var editIdx = ruleEditBtn.dataset.ruleEdit;
-      var ruleToEdit = loadCustomRules()[editIdx];
-      if (!ruleToEdit) return;
-      var editForm = document.getElementById("ruleForm");
-      editForm.dataset.editing = editIdx;
-      document.getElementById("ruleNameInput").value = ruleToEdit.name;
-      document.getElementById("ruleCodeInput").value = ruleToEdit.code;
-      document.getElementById("ruleError").hidden = true;
-      editForm.hidden = false;
-      return;
-    }
+    document.getElementById("tabs").addEventListener("click", function (e) {
+      var b = e.target.closest("[data-view]");
+      if (!b) return;
+      view = b.dataset.view;
+      renderTabs();
+      render();
+    });
 
-    var ruleDelBtn = e.target.closest("[data-rule-del]");
-    if (ruleDelBtn) {
-      var rulesAfterDel = loadCustomRules();
-      var delIdx = Number(ruleDelBtn.dataset.ruleDel);
-      if (rulesAfterDel[delIdx] && confirm('Delete rule "' + rulesAfterDel[delIdx].name + '"?')) {
-        rulesAfterDel.splice(delIdx, 1);
-        saveCustomRules(rulesAfterDel);
-        rulesBoxOpen = true;
+    document.getElementById("panel").addEventListener("click", function (e) {
+      if (e.target.closest("#q")) return;
+
+      var th = e.target.closest("th.sortable");
+      if (th) {
+        sortDesc = !sortDesc;
         render();
+        return;
       }
-      return;
-    }
 
-    if (e.target.closest("[data-rule-cancel]")) {
-      document.getElementById("ruleForm").hidden = true;
-      return;
-    }
+      var ft = e.target.closest("[data-f]");
+      if (ft) {
+        var fb = document.querySelector('[data-fbody="' + ft.dataset.f + '"]');
+        if (fb) {
+          fb.hidden = !fb.hidden;
+          ft.textContent = (fb.hidden ? "Show" : "Hide") + ft.textContent.slice(ft.textContent.indexOf(" threads"));
+        }
+        return;
+      }
 
-    var ruleSaveBtn = e.target.closest("[data-rule-save]");
-    if (ruleSaveBtn) {
-      var ruleName = document.getElementById("ruleNameInput").value.trim();
-      var ruleCode = document.getElementById("ruleCodeInput").value;
-      var ruleErrEl = document.getElementById("ruleError");
-      if (!ruleName) { ruleErrEl.textContent = "Name it first."; ruleErrEl.hidden = false; return; }
-      try { compileRule(ruleCode); }
-      catch (err) { ruleErrEl.textContent = "Doesn't parse: " + err.message; ruleErrEl.hidden = false; return; }
-      var rulesAfterSave = loadCustomRules();
-      var editing = document.getElementById("ruleForm").dataset.editing;
-      if (editing === "new") {
-        // Reworking a rule through "New rule" instead of Edit leaves the old one enabled, and
-        // its finding sits above the new one — which reads as "I saved and nothing changed".
-        // Names are how you tell rules apart, so refuse to have two of them.
-        var clash = rulesAfterSave.some(function (r) { return r.name === ruleName; });
-        if (clash) {
-          ruleErrEl.textContent = 'A rule named "' + ruleName + '" already exists. ' +
-            "Use its Edit button to change it, or pick another name.";
+      var ruleNewBtn = e.target.closest("[data-rule-new]");
+      if (ruleNewBtn) {
+        var newForm = document.getElementById("ruleForm");
+        newForm.dataset.editing = "new";
+        document.getElementById("ruleNameInput").value = "";
+        document.getElementById("ruleCodeInput").value = "";
+        document.getElementById("ruleError").hidden = true;
+        newForm.hidden = false;
+        document.getElementById("ruleNameInput").focus();
+        return;
+      }
+
+      var ruleEditBtn = e.target.closest("[data-rule-edit]");
+      if (ruleEditBtn) {
+        var editIdx = ruleEditBtn.dataset.ruleEdit;
+        var ruleToEdit = loadCustomRules()[editIdx];
+        if (!ruleToEdit) return;
+        var editForm = document.getElementById("ruleForm");
+        editForm.dataset.editing = editIdx;
+        document.getElementById("ruleNameInput").value = ruleToEdit.name;
+        document.getElementById("ruleCodeInput").value = ruleToEdit.code;
+        document.getElementById("ruleError").hidden = true;
+        editForm.hidden = false;
+        return;
+      }
+
+      var ruleDelBtn = e.target.closest("[data-rule-del]");
+      if (ruleDelBtn) {
+        var rulesAfterDel = loadCustomRules();
+        var delIdx = Number(ruleDelBtn.dataset.ruleDel);
+        if (rulesAfterDel[delIdx] && confirm('Delete rule "' + rulesAfterDel[delIdx].name + '"?')) {
+          rulesAfterDel.splice(delIdx, 1);
+          saveCustomRules(rulesAfterDel);
+          rulesBoxOpen = true;
+          render();
+        }
+        return;
+      }
+
+      if (e.target.closest("[data-rule-cancel]")) {
+        document.getElementById("ruleForm").hidden = true;
+        return;
+      }
+
+      var ruleSaveBtn = e.target.closest("[data-rule-save]");
+      if (ruleSaveBtn) {
+        var ruleName = document.getElementById("ruleNameInput").value.trim();
+        var ruleCode = document.getElementById("ruleCodeInput").value;
+        var ruleErrEl = document.getElementById("ruleError");
+        if (!ruleName) {
+          ruleErrEl.textContent = "Name it first.";
           ruleErrEl.hidden = false;
           return;
         }
-        rulesAfterSave.push({ name: ruleName, code: ruleCode, enabled: true });
-      } else {
-        rulesAfterSave[Number(editing)] = {
-          name: ruleName, code: ruleCode, enabled: rulesAfterSave[Number(editing)].enabled
-        };
-      }
-      saveCustomRules(rulesAfterSave);
-      rulesBoxOpen = true;
-      render();
-      return;
-    }
-
-    var row = e.target.closest("tr[data-group], tr[data-stack]");
-    if (!row) return;
-    var key = row.dataset.group !== undefined ? "groupbody" : "body";
-    var idx = row.dataset.group !== undefined ? row.dataset.group : row.dataset.stack;
-    var body = row.parentNode.querySelector('tr[data-' + key + '="' + idx + '"]');
-    if (body) body.hidden = !body.hidden;
-  });
-
-  document.getElementById("panel").addEventListener("input", function (e) {
-    if (e.target.id === "q") { searchQuery = e.target.value; runSearch(); return; }
-
-    if (e.target.matches("[data-rule-toggle]")) {
-      var rules = loadCustomRules();
-      var toggleIdx = Number(e.target.dataset.ruleToggle);
-      if (rules[toggleIdx]) {
-        rules[toggleIdx].enabled = e.target.checked;
-        saveCustomRules(rules);
+        try {
+          compileRule(ruleCode);
+        } catch (err) {
+          ruleErrEl.textContent = "Doesn't parse: " + err.message;
+          ruleErrEl.hidden = false;
+          return;
+        }
+        var rulesAfterSave = loadCustomRules();
+        var editing = document.getElementById("ruleForm").dataset.editing;
+        if (editing === "new") {
+          /*Reworking a rule through "New rule" instead of Edit leaves the old one enabled, and
+          its finding sits above the new one — which reads as "I saved and nothing changed".
+          Names are how you tell rules apart, so refuse to have two of them.*/
+          var clash = rulesAfterSave.some(function (r) {
+            return r.name === ruleName;
+          });
+          if (clash) {
+            ruleErrEl.textContent = 'A rule named "' + ruleName + '" already exists. ' +
+              "Use its Edit button to change it, or pick another name.";
+            ruleErrEl.hidden = false;
+            return;
+          }
+          rulesAfterSave.push({name: ruleName, code: ruleCode, enabled: true});
+        } else {
+          rulesAfterSave[Number(editing)] = {
+            name: ruleName, code: ruleCode, enabled: rulesAfterSave[Number(editing)].enabled
+          };
+        }
+        saveCustomRules(rulesAfterSave);
         rulesBoxOpen = true;
         render();
-      }
-    }
-  });
-
-  function load(slot, file) {
-    var nameEl = document.getElementById("name" + slot);
-    var metaEl = document.getElementById("meta" + slot);
-    nameEl.textContent = file.name;
-    metaEl.textContent = "parsing…";
-
-    file.text().then(function (text) {
-      // Past the ~512 MB maximum string length Chrome resolves with "" instead of rejecting,
-      // so without this a 600 MB dump reports a confident "0 threads".
-      if (!text.length && file.size) {
-        metaEl.textContent = "could not read this file";
-        var emptyWarn = document.getElementById("warn" + slot);
-        emptyWarn.textContent = "Read back empty. Over roughly 500 MB the browser cannot hold a " +
-          "file as text — trim the dump to the threads you need, or split it.";
-        emptyWarn.hidden = false;
         return;
       }
-      var t0 = performance.now();
-      var parsed = parse(text);
-      var ms = Math.round(performance.now() - t0);
-      dumps[slot] = parsed;
-      metaEl.textContent = nThreads(parsed.threads.length) + " · " +
-        fileSize(file.size) + " · " + ms + " ms";
-      // Next to the count it contradicts: a half-parsed dump otherwise reads as a healthy small one.
-      var warnEl = document.getElementById("warn" + slot);
-      if (parsed.unknownHeaders) {
-        warnEl.textContent = parsed.unknownHeaders + " more " +
-          (parsed.unknownHeaders === 1 ? "line looks like a thread header" : "lines look like thread headers") +
-          " but the format wasn't recognised — those threads are missing here";
-        warnEl.hidden = false;
-      } else {
-        warnEl.hidden = true;
+
+      var row = e.target.closest("tr[data-group], tr[data-stack]");
+      if (!row) return;
+      var key = row.dataset.group !== undefined ? "groupbody" : "body";
+      var idx = row.dataset.group !== undefined ? row.dataset.group : row.dataset.stack;
+      var body = row.parentNode.querySelector('tr[data-' + key + '="' + idx + '"]');
+      if (body) body.hidden = !body.hidden;
+    });
+
+    document.getElementById("panel").addEventListener("input", function (e) {
+      if (e.target.id === "q") {
+        searchQuery = e.target.value;
+        runSearch();
+        return;
       }
-      document.getElementById("slot" + slot).classList.add("loaded");
-      if (slot === "B") view = "diff";
-      renderSummary(); renderTabs(); render();
-    }).catch(function (err) {
-      // Without this the slot sits on "parsing…" forever, never saying why.
-      var msg = String((err && err.message) || err);
-      metaEl.textContent = "could not read this file";
-      var warnEl = document.getElementById("warn" + slot);
-      warnEl.textContent = /invalid string length/i.test(msg)
-        ? "Too large for the browser to hold as text (the ceiling is about 500 MB). " +
+
+      if (e.target.matches("[data-rule-toggle]")) {
+        var rules = loadCustomRules();
+        var toggleIdx = Number(e.target.dataset.ruleToggle);
+        if (rules[toggleIdx]) {
+          rules[toggleIdx].enabled = e.target.checked;
+          saveCustomRules(rules);
+          rulesBoxOpen = true;
+          render();
+        }
+      }
+    });
+
+    function load(slot, file) {
+      var nameEl = document.getElementById("name" + slot);
+      var metaEl = document.getElementById("meta" + slot);
+      nameEl.textContent = file.name;
+      metaEl.textContent = "parsing…";
+
+      file.text().then(function (text) {
+        // Past the ~512 MB maximum string length Chrome resolves with "" instead of rejecting,
+        // so without this a 600 MB dump reports a confident "0 threads".
+        if (!text.length && file.size) {
+          metaEl.textContent = "could not read this file";
+          var emptyWarn = document.getElementById("warn" + slot);
+          emptyWarn.textContent = "Read back empty. Over roughly 500 MB the browser cannot hold a " +
+            "file as text — trim the dump to the threads you need, or split it.";
+          emptyWarn.hidden = false;
+          return;
+        }
+        var t0 = performance.now();
+        var parsed = parse(text);
+        var ms = Math.round(performance.now() - t0);
+        dumps[slot] = parsed;
+        metaEl.textContent = nThreads(parsed.threads.length) + " · " +
+          fileSize(file.size) + " · " + ms + " ms";
+        // Next to the count it contradicts: a half-parsed dump otherwise reads as a healthy small one.
+        var warnEl = document.getElementById("warn" + slot);
+        if (parsed.plainHeaders) {
+          warnEl.textContent = "This is a Thread.dump_to_file dump in plain format, which isn't read " +
+            "here — take it again with -format=json to get these " + parsed.plainHeaders + " threads.";
+          warnEl.hidden = false;
+        } else if (parsed.unknownHeaders) {
+          warnEl.textContent = parsed.unknownHeaders + " more " +
+            (parsed.unknownHeaders === 1 ? "line looks like a thread header" : "lines look like thread headers") +
+            " but the format wasn't recognised — those threads are missing here";
+          warnEl.hidden = false;
+        } else {
+          warnEl.hidden = true;
+        }
+        document.getElementById("slot" + slot).classList.add("loaded");
+        if (slot === "B") view = "diff";
+        renderSummary();
+        renderTabs();
+        render();
+      }).catch(function (err) {
+        // Without this the slot sits on "parsing…" forever, never saying why.
+        var msg = String((err && err.message) || err);
+        metaEl.textContent = "could not read this file";
+        var warnEl = document.getElementById("warn" + slot);
+        warnEl.textContent = /invalid string length/i.test(msg)
+          ? "Too large for the browser to hold as text (the ceiling is about 500 MB). " +
           "Trim it to the threads you care about, or split it."
-        : msg;
-      warnEl.hidden = false;
-    });
-  }
+          : msg;
+        warnEl.hidden = false;
+      });
+    }
 
-  ["A", "B"].forEach(function (slot) {
-    document.getElementById("file" + slot).addEventListener("change", function (e) {
-      if (e.target.files[0]) load(slot, e.target.files[0]);
+    ["A", "B"].forEach(function (slot) {
+      document.getElementById("file" + slot).addEventListener("change", function (e) {
+        if (e.target.files[0]) load(slot, e.target.files[0]);
+      });
+      var el = document.getElementById("slot" + slot);
+      el.addEventListener("dragover", function (e) {
+        e.preventDefault();
+        el.classList.add("over");
+      });
+      el.addEventListener("dragleave", function () {
+        el.classList.remove("over");
+      });
+      el.addEventListener("drop", function (e) {
+        e.preventDefault();
+        el.classList.remove("over");
+        if (e.dataTransfer.files[0]) load(slot, e.dataTransfer.files[0]);
+      });
     });
-    var el = document.getElementById("slot" + slot);
-    el.addEventListener("dragover", function (e) { e.preventDefault(); el.classList.add("over"); });
-    el.addEventListener("dragleave", function () { el.classList.remove("over"); });
-    el.addEventListener("drop", function (e) {
-      e.preventDefault(); el.classList.remove("over");
-      if (e.dataTransfer.files[0]) load(slot, e.dataTransfer.files[0]);
-    });
-  });
 
-  window.addEventListener("dragover", function (e) { e.preventDefault(); });
-  window.addEventListener("drop", function (e) { e.preventDefault(); });
-})();
+    window.addEventListener("dragover", function (e) {
+      e.preventDefault();
+    });
+    window.addEventListener("drop", function (e) {
+      e.preventDefault();
+    });
+  })();
 </script>

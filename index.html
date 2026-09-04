@@ -8,7 +8,7 @@
 
 <h1>Thread Dump Inspector</h1>
 
-<p>Reads jstack-style Java thread dumps and points at what is wrong.<br>
+<p>Reads Java thread dumps &mdash; text or JSON &mdash; and points at what is wrong.<br>
 One HTML file. Runs in your browser.</p>
 
 <p><font size="+3"><b>[ <a href="thread-inspector.html">Open the inspector</a> ]</b></font></p>
@@ -31,10 +31,43 @@ One HTML file. Runs in your browser.</p>
 <p>Parsed in the browser. No upload, no backend, no analytics, no external request &mdash;
 not even a font. Save the page and it works offline.</p>
 
-<p>Reads both layouts:</p>
+<hr>
 
-<pre>"name" - Thread t@N
-"name" #N ... tid=0x... nid=0x...</pre>
+<h2>Which dumps it reads</h2>
+
+<table border="1" cellpadding="4" cellspacing="0">
+<tr>
+  <th>Taken with</th><th>JDK 8, 17</th><th>JDK 21</th><th>JDK 25&ndash;28</th>
+</tr>
+<tr>
+  <td><tt>jstack</tt> / <tt>jcmd Thread.print</tt></td>
+  <td>yes</td><td>yes</td><td>yes</td>
+</tr>
+<tr>
+  <td><tt>Thread.dump_to_file -format=json</tt></td>
+  <td>no such command</td><td>yes, no states in that format</td><td>yes, full data</td>
+</tr>
+<tr>
+  <td><tt>Thread.dump_to_file -format=plain</tt></td>
+  <td>no such command</td><td colspan="2">recognised, asks you to re-take as json</td>
+</tr>
+</table>
+
+<p>Tested on Temurin 17, 21, 25 and 26, Liberica 8, JetBrains Runtime 25, and OpenJDK
+early-access 27 and 28.</p>
+
+<p><b>jstack cannot see virtual threads</b> &mdash; on any JDK from 21 to 28. On an application
+built on them it shows the carrier threads and nothing of what runs on them.</p>
+
+<p>That is a decision, not a gap:
+<a href="https://openjdk.org/jeps/425">JEP 425</a> says traditional thread dumps will not be
+extended to virtual threads, since a flat list does not scale to thousands of them, and adds
+<tt>Thread.dump_to_file</tt> instead &mdash; grouped by container, and written without pausing
+the application. Use <tt>-format=json</tt> and this inspector reads it.</p>
+
+<p>Neither format is a superset of the other, though: <tt>Thread.dump_to_file</tt> lists Java
+threads, so the JVM's own &mdash; GC, JIT compiler, VM Thread &mdash; are missing from it, about
+twenty that <tt>jstack</tt> does show. For a GC or JIT question, take both.</p>
 
 <hr>
 
