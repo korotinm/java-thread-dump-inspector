@@ -1,13 +1,43 @@
 # Thread Dump Inspector
 
-Reads jstack-style Java thread dumps and points at what is wrong. One HTML file, parsed in the
-browser, never uploaded.
+Reads Java thread dumps — text or JSON — and points at what is wrong. One HTML file, parsed in
+the browser, never uploaded.
 
 **[Open Thread Dump Inspector](https://korotinm.github.io/java-thread-dump-inspector/)**
 
 - No upload, no backend, no analytics, no external request — not even a font. Works offline.
-- Reads `"name" - Thread t@N` and `"name" #N ... tid=0x... nid=0x...`.
 - Tabs: Findings, Pools, Population, Top frame, States, Creation order, Locks, Stack search, Compare.
+
+## Which dumps it reads
+
+| Taken with | JDK 8, 17 | JDK 21 | JDK 25 – 28 |
+|:--|:--|:--|:--|
+| `jstack` / `jcmd Thread.print` | yes | yes | yes |
+| `jcmd Thread.dump_to_file -format=json` | no such command | yes, but that format carries no thread states | yes — states, virtual flag, lock owners |
+| `jcmd Thread.dump_to_file -format=plain` | no such command | recognised, asks you to re-take as json | recognised, asks you to re-take as json |
+
+Tested on Temurin 17, 21, 25 and 26, Liberica 8, JetBrains Runtime 25, and OpenJDK early-access
+27 and 28.
+Both classic header shapes are read: `"name" - Thread t@N` and `"name" #N ... tid=0x... nid=0x...`.
+From JDK 21 the header also carries an `[os-thread-id]` after `#N` — that is a version change,
+not a vendor one; Temurin, JetBrains Runtime and OpenJDK all print it.
+
+### jstack cannot see virtual threads
+
+`jstack` reports platform threads only — on every JDK from 21 to 28. Point it at an application
+built on virtual threads and you get the carrier threads, with nothing of what is running on them.
+
+This is a decision, not a gap. [JEP 425](https://openjdk.org/jeps/425) states that traditional
+thread dumps will not be extended to virtual threads, because a flat list does not scale to
+thousands or millions of them, and adds `Thread.dump_to_file` instead — which groups threads by
+container, and, unlike a traditional dump, does not pause the application while it is written.
+
+So if the process uses virtual threads, take the dump with `Thread.dump_to_file -format=json`.
+
+Neither format is a superset of the other, though. `Thread.dump_to_file` lists Java threads, so
+the JVM's own — GC, JIT compiler, VM Thread, Service Thread — are absent from it; on the dumps
+here that is around 20 threads `jstack` shows and the JSON does not. For a GC or JIT question,
+take both.
 
 ## Findings
 
@@ -84,6 +114,8 @@ return [{
 | `t.locksHeld` | Ids of the locks it currently owns. |
 | `t.id` | Thread id (`t@N` / `#N`), or `null` if absent. |
 | `t.raw` | The thread's original dump lines, unparsed. |
+| `t.virtual` | `true` for a virtual thread. Only a JSON dump from JDK 25+ says; absent elsewhere, so test it as truthy rather than comparing to `false`. |
+| `t.container` | Thread container it belongs to — `<root>`, a pool, or a StructuredTaskScope. JSON dumps only; forked tasks have no name, so this is what identifies them. |
 
 ### `helpers` — the same building blocks the built-in checks use
 
