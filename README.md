@@ -1,12 +1,13 @@
-# Thread Dump Inspector
+# Java Thread Dump Inspector
 
 Reads Java thread dumps — text or JSON — and points at what is wrong. One HTML file, parsed in
 the browser, never uploaded.
 
-**[Open Thread Dump Inspector](https://korotinm.github.io/java-thread-dump-inspector/)**
+**[Open the inspector](https://korotinm.github.io/java-thread-dump-inspector/)**
 
 - No upload, no backend, no analytics, no external request — not even a font. Works offline.
 - Tabs: Findings, Pools, Population, Top frame, States, Creation order, Locks, Stack search, Compare.
+- A sample dump is built in, so the tool can be tried without going to find one first.
 
 ## Which dumps it reads
 
@@ -22,26 +23,23 @@ Both classic header shapes are read: `"name" - Thread t@N` and `"name" #N ... ti
 From JDK 21 the header also carries an `[os-thread-id]` after `#N` — that is a version change,
 not a vendor one; Temurin, JetBrains Runtime and OpenJDK all print it.
 
-### jstack cannot see virtual threads
-
-`jstack` reports platform threads only — on every JDK from 21 to 28. Point it at an application
-built on virtual threads and you get the carrier threads, with nothing of what is running on them.
-
-This is a decision, not a gap. [JEP 425](https://openjdk.org/jeps/425) states that traditional
-thread dumps will not be extended to virtual threads, because a flat list does not scale to
-thousands or millions of them, and adds `Thread.dump_to_file` instead — which groups threads by
-container, and, unlike a traditional dump, does not pause the application while it is written.
-
-So if the process uses virtual threads, take the dump with `Thread.dump_to_file -format=json`.
-
-Neither format is a superset of the other, though. `Thread.dump_to_file` lists Java threads, so
-the JVM's own — GC, JIT compiler, VM Thread, Service Thread — are absent from it; on the dumps
-here that is around 20 threads `jstack` shows and the JSON does not. For a GC or JIT question,
-take both.
-
 Size limit: the browser's own maximum string length — about 500 MB in Chrome, higher elsewhere.
 A larger file cannot be read as text at all, and the inspector says so instead of showing zero
 threads.
+
+### Virtual threads need a different dump
+
+`jstack` reports platform threads only — on every JDK from 21 to 28. Point it at an application
+built on virtual threads and you see the carrier threads, with nothing of what runs on them. That
+is deliberate: [JEP 425](https://openjdk.org/jeps/425) states that traditional thread dumps will
+not be extended to virtual threads, since a flat list does not scale to millions of them.
+
+The dump that does show them is `jcmd <pid> Thread.dump_to_file -format=json dump.json` — every
+virtual thread, grouped by its thread container, and written without pausing the application.
+Load that file here.
+
+It is not a superset of `jstack`, though: it lists Java threads, so the JVM's own — GC, JIT
+compiler, VM Thread — are missing from it. For a GC or JIT question, take both.
 
 ## Findings
 

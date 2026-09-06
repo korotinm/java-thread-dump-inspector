@@ -1,26 +1,41 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Thread Dump Inspector</title>
+<title>Java Thread Dump Inspector</title>
+<meta name="description" content="Reads Java thread dumps — jstack text or jcmd JSON — in the browser and points at what is wrong: saturated pools, lock contention, deadlocks.">
 </head>
-<body bgcolor="#FFFFFF" text="#000000" link="#0000EE" vlink="#551A8B">
+<body bgcolor="#E0E0E0" text="#000000" link="#0000EE" vlink="#551A8B">
 
-<h1>Thread Dump Inspector</h1>
+<!-- Outer table is the hairline border: 1px of grey showing around the white one. -->
+<table width="680" align="center" cellpadding="1" cellspacing="0" bgcolor="#999999">
+<tr><td>
+<table width="100%" cellpadding="22" cellspacing="0" bgcolor="#FFFFFF">
+<tr><td>
+
+<h1>Java Thread Dump Inspector</h1>
 
 <p>Reads Java thread dumps &mdash; text or JSON &mdash; and points at what is wrong.<br>
 One HTML file. Runs in your browser.</p>
 
+<p>A service stops responding, a pool takes no new work, two threads deadlock. You take a thread
+dump and get thousands of lines. This reads them: which pools are saturated, who holds the lock
+everyone is waiting on, where the threads pile up.</p>
+
 <p><font size="+3"><b>[ <a href="thread-inspector.html">Open the inspector</a> ]</b></font></p>
+
+<p>No dump at hand? A sample one is built in &mdash; open it and look around.</p>
 
 <table border="1" cellpadding="4" cellspacing="0">
 <tr>
-  <th>Before using it</th>
-  <th>After using it</th>
+  <th bgcolor="#CCCCCC">Before using it</th>
+  <th bgcolor="#CCCCCC">After using it</th>
 </tr>
 <tr>
-  <td><img src="media/before.png" alt="before" width="320"></td>
-  <td><img src="media/after.png" alt="after" width="320"></td>
+  <td><img src="media/before.png" alt="A developer at night, head in hands, a raw thread dump on
+      the screen" width="300" height="302"></td>
+  <td><img src="media/after.png" alt="The same developer with the inspector open, reporting no
+      deadlocks" width="300" height="302"></td>
 </tr>
 </table>
 
@@ -37,18 +52,21 @@ not even a font. Save the page and it works offline.</p>
 
 <table border="1" cellpadding="4" cellspacing="0">
 <tr>
-  <th>Taken with</th><th>JDK 8, 17</th><th>JDK 21</th><th>JDK 25&ndash;28</th>
+  <th bgcolor="#CCCCCC">Taken with</th>
+  <th bgcolor="#CCCCCC">JDK 8, 17</th>
+  <th bgcolor="#CCCCCC">JDK 21</th>
+  <th bgcolor="#CCCCCC">JDK 25&ndash;28</th>
 </tr>
 <tr>
   <td><tt>jstack</tt> / <tt>jcmd Thread.print</tt></td>
   <td>yes</td><td>yes</td><td>yes</td>
 </tr>
 <tr>
-  <td><tt>Thread.dump_to_file -format=json</tt></td>
+  <td><tt>jcmd Thread.dump_to_file -format=json</tt></td>
   <td>no such command</td><td>yes, no states in that format</td><td>yes, full data</td>
 </tr>
 <tr>
-  <td><tt>Thread.dump_to_file -format=plain</tt></td>
+  <td><tt>jcmd Thread.dump_to_file -format=plain</tt></td>
   <td>no such command</td><td colspan="2">recognised, asks you to re-take as json</td>
 </tr>
 </table>
@@ -56,24 +74,29 @@ not even a font. Save the page and it works offline.</p>
 <p>Tested on Temurin 17, 21, 25 and 26, Liberica 8, JetBrains Runtime 25, and OpenJDK
 early-access 27 and 28.</p>
 
-<p><b>jstack cannot see virtual threads</b> &mdash; on any JDK from 21 to 28. On an application
-built on them it shows the carrier threads and nothing of what runs on them.</p>
+<p><b>jstack cannot see virtual threads</b> &mdash; on any JDK from 21 to 28. Against an
+application built on them it shows the carrier threads and nothing of what runs on them. That is
+deliberate: <a href="https://openjdk.org/jeps/425">JEP 425</a> says traditional thread dumps will
+not be extended to virtual threads, since a flat list does not scale to millions of them.</p>
 
-<p>That is a decision, not a gap:
-<a href="https://openjdk.org/jeps/425">JEP 425</a> says traditional thread dumps will not be
-extended to virtual threads, since a flat list does not scale to thousands of them, and adds
-<tt>Thread.dump_to_file</tt> instead &mdash; grouped by container, and written without pausing
-the application. Use <tt>-format=json</tt> and this inspector reads it.</p>
+<p>The dump that does show them is
+<tt>jcmd &lt;pid&gt; Thread.dump_to_file -format=json dump.json</tt> &mdash; every virtual thread,
+grouped by its thread container, and written without pausing the application. Load that file
+here.</p>
 
-<p>Neither format is a superset of the other, though: <tt>Thread.dump_to_file</tt> lists Java
-threads, so the JVM's own &mdash; GC, JIT compiler, VM Thread &mdash; are missing from it, about
-twenty that <tt>jstack</tt> does show. For a GC or JIT question, take both.</p>
+<p>It is not a superset of <tt>jstack</tt>, though: it lists Java threads, so the JVM's own
+&mdash; GC, JIT compiler, VM Thread &mdash; are missing from it. For a GC or JIT question, take
+both.</p>
 
 <hr>
 
 <h2>Tabs</h2>
 
 <table border="1" cellpadding="4" cellspacing="0">
+<tr>
+  <th bgcolor="#CCCCCC" align="left">Tab</th>
+  <th bgcolor="#CCCCCC" align="left">What it shows</th>
+</tr>
 <tr><td><b>Findings</b></td><td>What looks wrong, ranked. Start here.</td></tr>
 <tr><td><b>Pools</b></td><td>Which pools are saturated, and what their busy threads do.</td></tr>
 <tr><td><b>Population</b></td><td>Which thread groups exist and how big they are.</td></tr>
@@ -93,9 +116,8 @@ twenty that <tt>jstack</tt> does show. For a GC or JIT question, take both.</p>
 several waiters on one lock, a deadlock the JVM reported itself.</p>
 
 <p>Checks that match frames of a specific library carry a <tt>signature:</tt> badge, so a
-library-specific guess never reads as a universal truth. Only HikariCP ships built in; narrower
-ones live in
-<a href="https://github.com/korotinm/java-thread-dump-inspector/tree/main/rules">rules/</a>.</p>
+library-specific guess never reads as a universal truth. Only HikariCP ships built in &mdash;
+narrower ones are pasteable rules, below.</p>
 
 <hr>
 
@@ -104,6 +126,8 @@ ones live in
 <p>Add your own without touching the source. Findings &gt; Custom rules &gt; + New rule.
 Write the body of <tt>function (d, helpers)</tt>:</p>
 
+<table width="100%" border="1" cellpadding="8" cellspacing="0" bgcolor="#F0F0F0">
+<tr><td>
 <pre>var starved = d.threads.filter(function (t) {
   return t.state === "BLOCKED" &amp;&amp; t.top.indexOf("com.acme.cache.") === 0;
 });
@@ -115,24 +139,29 @@ return [{
   text: "Find the holder in the Locks tab first.",
   items: starved
 }];</pre>
+</td></tr>
+</table>
 
 <p>Return one finding, an array of them, or nothing when the dump does not match.
 Every thread field and helper is listed in the editor, under <i>How to write a rule</i>, and in
 the <a href="https://github.com/korotinm/java-thread-dump-inspector#writing-a-rule">full
 reference</a>.</p>
 
-<p>Rules live in localStorage: your browser only, never sent anywhere. A rule that throws
-becomes its own finding card instead of breaking the tab.</p>
-
-<p>Ready-made rules for specific libraries:
-<a href="https://github.com/korotinm/java-thread-dump-inspector/tree/main/rules">rules/</a>.
-Paste one into the form to use it.</p>
+<p>Rules live in localStorage: your browser only, never sent anywhere. A rule that throws becomes
+its own finding card instead of breaking the tab. Ready-made ones for specific libraries are in
+<a href="https://github.com/korotinm/java-thread-dump-inspector/tree/main/rules">rules/</a>
+&mdash; paste a file into the form to use it.</p>
 
 <hr>
 
 <p><a href="https://github.com/korotinm/java-thread-dump-inspector">Source on GitHub</a> |
 <a href="https://github.com/korotinm/java-thread-dump-inspector#contributing-a-rule">Contributing a rule</a> |
 <a href="https://github.com/korotinm/java-thread-dump-inspector/blob/main/LICENSE">MIT</a></p>
+
+</td></tr>
+</table>
+</td></tr>
+</table>
 
 </body>
 </html>
