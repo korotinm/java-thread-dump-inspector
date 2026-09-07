@@ -850,9 +850,8 @@
         color: var(--dim);
     }
 
-    /*Wayfinding, not a call to action — quiet until pointed at. A plain link, deliberately:
-    an icon or logo pulled from the other site would be the external request this page
-    promises never to make.*/
+    /* Plain links: an icon or logo fetched from the linked site would be the external request
+       this page promises never to make. */
     footer {
         font-family: var(--font-mono);
         font-size: .74rem;
@@ -865,6 +864,10 @@
 
     footer a:hover {
         color: var(--accent);
+    }
+
+    footer a + a {
+        margin-left: 1.4rem;
     }
 
 </style>
@@ -918,7 +921,10 @@ jcmd &lt;pid&gt; Thread.dump_to_file -format=json dump.json</pre>
         </div>
     </div>
 
-    <footer><a href="https://yank.run">&larr; yank.run</a></footer>
+    <footer>
+        <a href="https://yank.run">&larr; yank.run</a>
+        <a href="https://github.com/korotinm/java-thread-dump-inspector">source on GitHub</a>
+    </footer>
 
 </div>
 
@@ -2742,8 +2748,9 @@ Found 1 deadlock.
       });
     }
 
-    /*A real jstack dump of a wedged process, taken from the source in the test-data repo and
-     embedded so the tool can demonstrate itself without anyone having to go find a dump first.*/
+    /*A real jstack dump — a pool with every worker blocked behind one slow call, plus two
+     threads in a deadlock — so the tool can demonstrate itself without anyone having to go
+     find a dump first.*/
     document.getElementById("sampleBtn").addEventListener("click", function () {
       var text = document.getElementById("sampleDump").textContent.replace(/^\n/, "");
       load("A", new File([text], "sample-dump.txt", {type: "text/plain"}));
