@@ -827,10 +827,11 @@
         overflow-x: auto;
     }
 
-    .lock-id {
+    .cell-note {
         display: block;
+        margin-top: .15rem;
         font-size: .68rem;
-        color: var(--faint);
+        color: var(--dim);
     }
 
     .dl-mark {
@@ -1243,7 +1244,9 @@ Found 1 deadlock.
       UNKNOWN: {
         what: "This tool's label for a thread with no Thread.State line.",
         note: "JVM-internal threads — VM Thread, GC task thread, VM Periodic Task Thread — are not " +
-          "Java threads and have no state to report. Not an error."
+          "Java threads and have no state to report. Not an error. Their header still ends in a " +
+          "word like runnable: that is the VM's status for the native thread, not a Thread.State, " +
+          "and a GC thread prints it whether or not it is doing anything."
       }
     };
 
@@ -1316,6 +1319,15 @@ Found 1 deadlock.
      Monitors (synchronized) name the owner inline; j.u.c locks do not — their owner is only
      discoverable through the "Locked ownable synchronizers" section of another thread.*/
     var RE_WAIT_LOCK = /waiting to lock\s+<([0-9a-fx]+)>/i;
+    /*What follows nid= in the header is the VM's own status for the thread — a different
+     vocabulary from java.lang.Thread.State ("main" can be `waiting on condition` in the header
+     and TIMED_WAITING on the next line). For a JVM-internal thread it is the only thing said
+     at all, so it is worth keeping rather than reading as a state.*/
+    var RE_VM_STATUS = /\bnid=\S+\s+([^\[]+)/i;
+
+    // "- waiting to lock <0x...> (a com.acme.orders.InventoryCache)" — the class in brackets is
+    // what makes one lock address tell apart from another at a glance.
+    var RE_LOCK_TYPE = /\(a\s+([^)]+)\)/;
     var RE_PARK_FOR = /parking to wait for\s+<([0-9a-fx]+)>/i;
     var RE_LOCKED = /^-\s+locked\s+<([0-9a-fx]+)>/i;
     var RE_OWNS_SYNC = /^-\s+<([0-9a-fx]+)>\s+\(a\s/i;
@@ -1452,6 +1464,8 @@ Found 1 deadlock.
             name: name, id: id, state: "UNKNOWN", frames: [], locks: [],
             waitsFor: null, waitingOn: null, locksHeld: [], raw: [line]
           };
+          var vm = RE_VM_STATUS.exec(line);
+          if (vm) cur.vmStatus = vm[1].trim();
           inSync = false;
           inDeadlock = false;
           continue;
@@ -1482,7 +1496,11 @@ Found 1 deadlock.
           cur.locks.push(t);
 
           var w = RE_WAIT_LOCK.exec(t) || RE_PARK_FOR.exec(t);
-          if (w) cur.waitingOn = w[1];
+          if (w) {
+            cur.waitingOn = w[1];
+            var ty = RE_LOCK_TYPE.exec(t);
+            if (ty) cur.waitingOnType = ty[1];
+          }
 
           var held = RE_LOCKED.exec(t);
           if (held) cur.locksHeld.push(held[1]);
@@ -1595,7 +1613,13 @@ Found 1 deadlock.
 
     // A worker ready to take work: waiting on the task queue, or sitting in an event loop.
     // An event loop (epoll/kqueue/select) counts as ready — it does not stop the pool.
-    var RE_IDLE = /ThreadPoolExecutor\.getTask|ForkJoinPool\.awaitWork|ForkJoinPool\.scan|DelayedWorkQueue\.take|epollWait|EPollArrayWrapper\.poll|KQueueArrayWrapper|SelectorImpl\.(?:select|doSelect)|SingleThreadEventExecutor/;
+    var RE_IDLE = /ThreadPoolExecutor\.getTask|ForkJoinPool\.awaitWork|DelayedWorkQueue\.take|epollWait|EPollArrayWrapper\.poll|KQueueArrayWrapper|SelectorImpl\.(?:select|doSelect)|SingleThreadEventExecutor/;
+
+    /*ForkJoinPool.scan is not an idle marker on its own: it calls topLevelExec, so a worker
+     running a task has scan in its stack too. On a Loom application that made every carrier
+     look idle — the pool executing the whole program reported zero busy threads. It means
+     idle only with nothing above it.*/
+    var RE_IDLE_TOP = /ForkJoinPool\.(?:scan|runWorker)/;
 
     /*A blocking socket read looks identical whether the thread waits for the next incoming
     request or for the answer to one it sent. What separates them is the rest of the stack:
@@ -1622,7 +1646,7 @@ Found 1 deadlock.
     function isIdleWorker(t) {
       var cached = idleCache.get(t);
       if (cached === undefined) {
-        cached = RE_IDLE.test(t.frames.join("\n")) || isInfraIdle(t);
+        cached = RE_IDLE.test(t.frames.join("\n")) || RE_IDLE_TOP.test(t.top) || isInfraIdle(t);
         idleCache.set(t, cached);
       }
       return cached;
@@ -2387,9 +2411,14 @@ Found 1 deadlock.
         return t.state;
       }));
       var body = groups.map(function (g, i) {
+        /*Only under UNKNOWN: elsewhere the Thread.State is the answer and the header word would
+         just be a second, coarser one. Here it is all the dump said — and it reads like a state,
+         which is what sends people looking for a bug in the parser.*/
+        var vm = g.key === "UNKNOWN" ? vmStatusNote(g.items) : "";
+
         return '<tr class="clickable" data-group="' + i + '">' +
           '<td class="n">' + g.items.length + "</td>" +
-          "<td>" + stateChip(g.key) + "</td>" +
+          "<td>" + stateChip(g.key) + vm + "</td>" +
           '<td class="m">' + esc(sortedGroups(groupBy(g.items, function (t) {
             return t.norm;
           }))[0].key) + " …</td></tr>" +
@@ -2400,6 +2429,28 @@ Found 1 deadlock.
       // it twice on one screen only teaches people to skip both.
       return tableWrap("<th>Count</th><th>State</th><th>Most common group</th>", body) +
         stateReference();
+    }
+
+    function vmStatusNote(items) {
+      var said = items.filter(function (t) {
+        return t.vmStatus;
+      });
+      // A JSON dump has no header line at all, and there UNKNOWN means the format carries no
+      // state field — a different story, told by the reference below rather than here.
+      if (!said.length) return "";
+
+      var c = countBy(said, function (t) {
+        return t.vmStatus;
+      });
+      var parts = Object.keys(c).sort(function (a, b) {
+        return c[b] - c[a];
+      }).map(function (k) {
+        return k + " \u00d7" + c[k];
+      });
+      var silent = items.length - said.length;
+      if (silent) parts.push("no status \u00d7" + silent);
+
+      return '<span class="cell-note">header says: ' + esc(parts.join(", ")) + "</span>";
     }
 
     /*Always lists every Thread.State, not only the ones this dump happens to contain — it is
@@ -2516,15 +2567,19 @@ Found 1 deadlock.
           ? '<span class="dl-mark">deadlock' + (cycles.count > 1 ? " " + (cycle + 1) : "") + "</span>"
           : "";
 
+        /*Under the holder rather than beside the stack frame: one thread can hold two contended
+         locks, and then the two rows carry the same name and the same t@ — the lock is the only
+         thing telling them apart, so it belongs where the eye compares them.*/
+        var lock = (g.items[0].waitingOnType ? g.items[0].waitingOnType + " " : "") + g.key;
+
         return '<tr class="clickable' + (inCycle ? " dl" : "") + '"' +
           (colour ? ' style="--dl: ' + colour + '"' : "") + ' data-group="' + i + '">' +
           '<td class="n">' + g.items.length + "</td>" +
-          '<td class="m">' + mark + esc(holder) + "</td>" +
-          // Named so two rows with the same holder are visibly two different locks.
-          '<td class="m">' + esc(owner ? owner.top : "holder not in this dump") +
-          '<span class="lock-id">' + esc(g.key) + "</span></td></tr>" +
+          '<td class="m">' + mark + esc(holder) +
+          '<span class="cell-note">' + esc(lock) + "</span></td>" +
+          '<td class="m">' + esc(owner ? owner.top : "holder not in this dump") + "</td></tr>" +
           '<tr hidden data-groupbody="' + i + '"><td colspan="3" style="padding:0">' +
-          subTable(g.items, 60, nThreads(g.items.length) + " waiting for lock " + g.key +
+          subTable(g.items, 60, nThreads(g.items.length) + " waiting for " + lock +
             ", held by " + holder) + "</td></tr>";
       }).join("");
 
