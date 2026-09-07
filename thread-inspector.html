@@ -554,6 +554,14 @@
         border-bottom: 1px solid var(--rule);
     }
 
+    .sub-cap {
+        margin: 0;
+        padding: .5rem .9rem 0;
+        font-family: var(--font-mono);
+        font-size: .68rem;
+        color: var(--dim);
+    }
+
     .sub th {
         background: var(--bg);
         font-size: .6rem;
@@ -817,6 +825,26 @@
         color: var(--ink-soft);
         white-space: pre;
         overflow-x: auto;
+    }
+
+    .lock-id {
+        display: block;
+        font-size: .68rem;
+        color: var(--faint);
+    }
+
+    .dl-mark {
+        display: inline-block;
+        margin-right: .5rem;
+        padding: 0 .3rem;
+        font-size: .68rem;
+        letter-spacing: .04em;
+        color: var(--dl);
+        border: 1px solid var(--dl);
+    }
+
+    tr.dl td:first-child {
+        box-shadow: inset 3px 0 0 var(--dl);
     }
 
     .empty {
@@ -1294,6 +1322,7 @@ Found 1 deadlock.
     var RE_SYNC_HEAD = /Locked ownable synchronizers:/i;
     var NO_STACK = "(no stack)";
     var RE_DEADLOCK = /Found (?:one|\d+) Java-level deadlock/i;
+    var RE_DEADLOCK_G = /Found (?:one|\d+) Java-level deadlock/gi;
     var RE_DL_END = /Java stack information for the threads listed above/i;
 
     /*Seen on plain jstack of an IntelliJ process: a Kotlin coroutine tree appended after the
@@ -1504,23 +1533,24 @@ Found 1 deadlock.
       };
     }
 
-    // The JVM prints its own deadlock report above the thread list. Keep it verbatim:
-    // re-deriving it from the wait graph is redundant and less reliable.
+    /*The JVM prints its own deadlock report after the thread list. Kept verbatim: re-deriving
+     it is redundant and less reliable. One block per deadlock, each followed by a repeat of the
+     threads' stacks — those are dropped, the tool shows them anyway, and every block is kept:
+     a process with three deadlocks used to report one.*/
     function extractDeadlock(lines) {
-      var start = -1;
+      var blocks = [];
       for (var i = 0; i < lines.length; i++) {
-        if (RE_DEADLOCK.test(lines[i])) {
-          start = i;
-          break;
+        if (!RE_DEADLOCK.test(lines[i])) continue;
+        var block = [];
+        var j = i;
+        for (; j < lines.length && block.length < 200; j++) {
+          if (j > i && (RE_DL_END.test(lines[j]) || RE_DEADLOCK.test(lines[j]))) break;
+          block.push(lines[j]);
         }
+        blocks.push(block.join("\n").replace(/\s+$/, ""));
+        i = j - 1;
       }
-      if (start < 0) return null;
-      var block = [];
-      for (var j = start; j < lines.length && block.length < 200; j++) {
-        if (j > start && RE_DL_END.test(lines[j])) break;
-        block.push(lines[j]);
-      }
-      return block.join("\n").replace(/\s+$/, "");
+      return blocks.length ? blocks.join("\n\n") : null;
     }
 
     function countBy(arr, fn) {
@@ -1797,9 +1827,12 @@ Found 1 deadlock.
 
       // The JVM already found it — report verbatim, it outranks anything we infer.
       if (d.deadlock) {
+        var nDeadlocks = d.deadlock.match(RE_DEADLOCK_G).length;
         out.push({
           level: "alert",
-          title: "The JVM reported a deadlock",
+          title: nDeadlocks > 1
+            ? "The JVM reported " + nDeadlocks + " deadlocks"
+            : "The JVM reported a deadlock",
           text: "Taken from the dump as-is. Threads in a deadlock never recover; the process needs " +
             "a restart once you have the report.",
           pre: d.deadlock
@@ -1829,7 +1862,7 @@ Found 1 deadlock.
         return t.waitsFor;
       });
       sortedGroups(groupBy(waiters, function (t) {
-        return t.waitsFor.name + " t@" + t.waitsFor.id;
+        return t.waitsFor.lock;   // per lock: the title says "one lock" and has to mean it
       })).forEach(function (g) {
         if (g.items.length < MIN_WAITERS) return;
         var owner = all.filter(function (t) {
@@ -2233,8 +2266,13 @@ Found 1 deadlock.
 
     // Expanded thread list: its own header and border, so it does not read as a continuation
     // of the table it sits inside.
-    function subTable(items, limit) {
-      return '<div class="sub"><div class="scroll"><table>' +
+    /*The caption is optional and only the Locks tab passes one: there a row is named after the
+     lock's holder, so without a word the threads underneath read as belonging to it rather than
+     queueing behind it.*/
+    function subTable(items, limit, caption) {
+      return '<div class="sub">' +
+        (caption ? '<p class="sub-cap">' + esc(caption) + "</p>" : "") +
+        '<div class="scroll"><table>' +
         "<thead><tr><th>t@</th><th>Thread name</th><th>State</th><th>Top frame</th></tr></thead>" +
         "<tbody>" + threadRows(items, limit) + "</tbody></table></div></div>";
     }
@@ -2392,31 +2430,108 @@ Found 1 deadlock.
         "Lower id = created earlier. Adjacent ids were created together, which dates a leak.");
     }
 
+    /*Muted on purpose: the palette has to sit beside the state colours without competing with
+     them, and none of these four is close to blocked-red, timed-amber or runnable-green.*/
+    var DL_COLOURS = ["#C98AC4", "#7FA9D9", "#6FBFC4", "#9B8FD9"];
+
+    /*A deadlock is a cycle in the waits-for graph. Found here rather than read out of the JVM's
+     own report, because a JSON dump carries no such report at all — and because the report is
+     printed once, while the cycle is what each row has to be matched against.
+
+     Every thread waits on at most one lock, so the graph is functional: from any thread there
+     is a single chain to follow, and walking it until it repeats a thread already on the
+     current path finds the cycle, if there is one.*/
+    function deadlockCycles(threads) {
+      var byId = Object.create(null);
+      threads.forEach(function (t) {
+        if (t.id !== null) byId[t.id] = t;
+      });
+
+      var ON_PATH = 1, DONE = 2;
+      var seen = Object.create(null);
+      var cycleOf = Object.create(null);
+      var n = 0;
+
+      threads.forEach(function (start) {
+        if (start.id === null || seen[start.id]) return;
+        var path = [];
+        var t = start;
+        while (t && t.id !== null && !seen[t.id]) {
+          seen[t.id] = ON_PATH;
+          path.push(t);
+          t = t.waitsFor ? byId[t.waitsFor.id] : null;
+        }
+        // Walked back into the current path: everything from that point on is the cycle.
+        if (t && t.id !== null && seen[t.id] === ON_PATH) {
+          for (var i = path.indexOf(t); i < path.length; i++) cycleOf[path[i].id] = n;
+          n++;
+        }
+        path.forEach(function (p) {
+          seen[p.id] = DONE;
+        });
+      });
+
+      cycleOf.count = n;
+      return cycleOf;
+    }
+
     function viewLocks(d) {
       var waiters = d.threads.filter(function (t) {
         return t.waitsFor;
       });
       if (!waiters.length) return '<div class="empty">No lock contention in this dump.</div>';
 
+      /*Keyed by the lock, not by the thread holding it: one thread can hold two contended locks
+       at once — nested synchronized blocks do exactly that — and keying by the holder merged
+       both queues into a single row that then claimed to be one lock.*/
       var groups = sortedGroups(groupBy(waiters, function (t) {
-        return t.waitsFor.name + " t@" + t.waitsFor.id;
+        return t.waitsFor.lock;
       }));
 
+      var cycles = deadlockCycles(d.threads);
+
+      /*Colours follow the order the cycles appear in this table, not the order they were found
+       in the graph — the rows are sorted by waiter count, so those two orders differ and
+       neighbouring cycles could otherwise land on the same hue.*/
+      var colourOf = Object.create(null);
+      groups.forEach(function (g) {
+        var c = cycles[g.items[0].waitsFor.id];
+        if (c !== undefined && colourOf[c] === undefined) {
+          colourOf[c] = DL_COLOURS[Object.keys(colourOf).length % DL_COLOURS.length];
+        }
+      });
+
       var body = groups.map(function (g, i) {
+        var waitsFor = g.items[0].waitsFor;
         var owner = d.threads.filter(function (t) {
-          return t.id === g.items[0].waitsFor.id;
+          return t.id === waitsFor.id;
         })[0];
-        return '<tr class="clickable" data-group="' + i + '">' +
+        var holder = waitsFor.name + " t@" + waitsFor.id;
+
+        var cycle = cycles[waitsFor.id];
+        var inCycle = cycle !== undefined;
+        var colour = inCycle ? colourOf[cycle] : null;
+        // The word carries the meaning; the colour only says which threads belong together.
+        var mark = inCycle
+          ? '<span class="dl-mark">deadlock' + (cycles.count > 1 ? " " + (cycle + 1) : "") + "</span>"
+          : "";
+
+        return '<tr class="clickable' + (inCycle ? " dl" : "") + '"' +
+          (colour ? ' style="--dl: ' + colour + '"' : "") + ' data-group="' + i + '">' +
           '<td class="n">' + g.items.length + "</td>" +
-          '<td class="m">' + esc(g.key) + "</td>" +
-          '<td class="m">' + esc(owner ? owner.top : "holder not in this dump") + "</td></tr>" +
+          '<td class="m">' + mark + esc(holder) + "</td>" +
+          // Named so two rows with the same holder are visibly two different locks.
+          '<td class="m">' + esc(owner ? owner.top : "holder not in this dump") +
+          '<span class="lock-id">' + esc(g.key) + "</span></td></tr>" +
           '<tr hidden data-groupbody="' + i + '"><td colspan="3" style="padding:0">' +
-          subTable(g.items, 60) + "</td></tr>";
+          subTable(g.items, 60, nThreads(g.items.length) + " waiting for lock " + g.key +
+            ", held by " + holder) + "</td></tr>";
       }).join("");
 
       return tableWrap("<th>Waiting</th><th>Lock holder</th><th>Holder is in</th>", body,
         "Covers both monitors and j.u.c locks, resolving the owner when the dump names it only " +
-        "indirectly. Check the holder first — that is the bottleneck.");
+        "indirectly. Check the holder first — that is the bottleneck. Rows marked deadlock hold " +
+        "each other's locks; one colour is one cycle.");
     }
 
     function viewSearch() {
