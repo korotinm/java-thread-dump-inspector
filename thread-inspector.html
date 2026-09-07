@@ -1293,7 +1293,15 @@ Found 1 deadlock.
      just part of the name, like the "2" in "a2p-supervisor". Blind /\d+/g would turn the
      latter into "aNp-supervisor" and misgroup it.*/
     function normalizeName(name) {
+      /*"G1 Service", "C2 CompilerThread0", "ZGC1 Worker#3" — a first word of capitals and digits
+       is the name of a JVM component, not an instance number, and collapsing it produced labels
+       ("GN Service") that read as a parsing failure. Keyed on the shape rather than a list of
+       known names, so a collector this tool has never heard of is covered too.*/
+      var firstWord = name.split(" ")[0];
+      var namedComponent = /^[A-Z]+\d+$/.test(firstWord);
+
       return name.replace(/\d+/g, function (run, offset, str) {
+        if (namedComponent && offset + run.length <= firstWord.length) return run;
         var before = offset > 0 ? str.charAt(offset - 1) : "";
         var after = offset + run.length < str.length ? str.charAt(offset + run.length) : "";
         var isBoundary = function (c) {
@@ -1652,6 +1660,15 @@ Found 1 deadlock.
       return cached;
     }
 
+    /*A carrier: a platform thread of the scheduler pool with a virtual thread mounted on it.
+     Recognised by the frame that mounts one, which is in the carrier's stack for as long as it
+     is carrying.*/
+    var RE_CARRIER = /VirtualThread\.runContinuation/;
+
+    function isCarrier(t) {
+      return RE_CARRIER.test(t.frames.join("\n"));
+    }
+
     // A real pool is recognised by the executor frame in the stack, not by the name:
     // otherwise any group with a number in its name becomes a "pool" (DataStreamer, Thread-N).
     var RE_WORKER = /ThreadPoolExecutor\.runWorker|ForkJoinWorkerThread\.run|ScheduledThreadPoolExecutor|SingleThreadEventExecutor/;
@@ -1866,6 +1883,11 @@ Found 1 deadlock.
       // 1. Pool fully busy
       pools(d).forEach(function (p) {
         if (p.ratio < 1 || p.items.length < MIN_POOL) return;
+        /*Every carrier running is Loom working as designed — one finishes a continuation and
+         mounts the next — so the queueing this card warns about does not happen, and its advice
+         (move the blocking call to a pool of its own) has nothing to apply to. Left as a red
+         card it fires on healthy applications, which is what makes the tab worth ignoring.*/
+        if (p.busy.every(isCarrier)) return;
         var dominant = sortedGroups(groupBy(p.busy, function (t) {
           return t.top;
         }))[0];
@@ -1923,7 +1945,9 @@ Found 1 deadlock.
        so on any dump they group into the largest pile here and report work piling up in a frame
        that does not exist.*/
       sortedGroups(groupBy(all.filter(function (t) {
-        return !isIdleWorker(t) && t.top !== NO_STACK;
+        // Carriers excluded for the same reason as in check 1: every carrier in the mounting
+        // frame is Loom running, not work piling up in one place.
+        return !isIdleWorker(t) && t.top !== NO_STACK && !isCarrier(t);
       }), function (t) {
         return t.top;
       }))
