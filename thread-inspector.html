@@ -1621,13 +1621,24 @@ Found 1 deadlock.
 
     // A worker ready to take work: waiting on the task queue, or sitting in an event loop.
     // An event loop (epoll/kqueue/select) counts as ready — it does not stop the pool.
-    var RE_IDLE = /ThreadPoolExecutor\.getTask|ForkJoinPool\.awaitWork|DelayedWorkQueue\.take|epollWait|EPollArrayWrapper\.poll|KQueueArrayWrapper|SelectorImpl\.(?:select|doSelect)|SingleThreadEventExecutor/;
+    var RE_IDLE = /ThreadPoolExecutor\.getTask|DelayedWorkQueue\.take|epollWait|EPollArrayWrapper\.poll|KQueueArrayWrapper|SelectorImpl\.(?:select|doSelect)|SingleThreadEventExecutor/;
 
-    /*ForkJoinPool.scan is not an idle marker on its own: it calls topLevelExec, so a worker
-     running a task has scan in its stack too. On a Loom application that made every carrier
-     look idle — the pool executing the whole program reported zero busy threads. It means
-     idle only with nothing above it.*/
-    var RE_IDLE_TOP = /ForkJoinPool\.(?:scan|runWorker)/;
+    /*A ForkJoinPool worker is idle when nothing but parking sits above the pool's own loop.
+     The frame alone decides nothing: the JDK's pool parks in awaitWork, the older copy Akka
+     ships as akka.dispatch.forkjoin parks inside scan itself — and scan is also under every
+     task a working worker runs, since it calls topLevelExec. Matching scan anywhere made Loom
+     carriers look idle; matching it only on top made every parked Akka dispatcher look busy.
+     What separates the two is whether a task is above the loop.*/
+    var RE_FJ_LOOP = /ForkJoinPool\.(?:scan|awaitWork|idleAwaitWork|runWorker)\b/;
+    var RE_PARKING = /(?:Unsafe|LockSupport)\.park|Thread\.(?:yield|onSpinWait)/;
+
+    function isIdleForkJoin(t) {
+      for (var i = 0; i < t.frames.length; i++) {
+        if (RE_FJ_LOOP.test(t.frames[i])) return true;
+        if (!RE_PARKING.test(t.frames[i])) return false;
+      }
+      return false;
+    }
 
     /*A blocking socket read looks identical whether the thread waits for the next incoming
     request or for the answer to one it sent. What separates them is the rest of the stack:
@@ -1654,7 +1665,7 @@ Found 1 deadlock.
     function isIdleWorker(t) {
       var cached = idleCache.get(t);
       if (cached === undefined) {
-        cached = RE_IDLE.test(t.frames.join("\n")) || RE_IDLE_TOP.test(t.top) || isInfraIdle(t);
+        cached = RE_IDLE.test(t.frames.join("\n")) || isIdleForkJoin(t) || isInfraIdle(t);
         idleCache.set(t, cached);
       }
       return cached;
