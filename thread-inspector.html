@@ -1619,9 +1619,11 @@ Found 1 deadlock.
       return t.norm;
     }
 
-    // A worker ready to take work: waiting on the task queue, or sitting in an event loop.
-    // An event loop (epoll/kqueue/select) counts as ready — it does not stop the pool.
-    var RE_IDLE = /ThreadPoolExecutor\.getTask|DelayedWorkQueue\.take|epollWait|EPollArrayWrapper\.poll|KQueueArrayWrapper|SelectorImpl\.(?:select|doSelect)|SingleThreadEventExecutor/;
+    /* A worker ready to take work: waiting on the task queue, sitting in an event loop, or
+       parked in a scheduler of its own. An event loop (epoll/kqueue/select) counts as ready —
+       it does not stop the pool. Two library frames are here on purpose: Netty's event loop and
+       kotlinx.coroutines' scheduler are how those two park, and nothing else says so. */
+    var RE_IDLE = /CoroutineScheduler\$Worker\.park|ThreadPoolExecutor\.getTask|DelayedWorkQueue\.take|epollWait|EPollArrayWrapper\.poll|KQueueArrayWrapper|SelectorImpl\.(?:select|doSelect)|SingleThreadEventExecutor/;
 
     /*A ForkJoinPool worker is idle when nothing but parking sits above the pool's own loop.
      The frame alone decides nothing: the JDK's pool parks in awaitWork, the older copy Akka
@@ -1678,6 +1680,25 @@ Found 1 deadlock.
 
     function isCarrier(t) {
       return RE_CARRIER.test(t.frames.join("\n"));
+    }
+
+    /*How a thread waits, not what it was doing when it stopped. Grouping on these puts the
+     finalizer, a JMX timeout timer and twenty Hadoop streamers into one pile labelled
+     "java.lang.Object.wait". The module prefix is optional because a JSON dump writes frames
+     as "java.base/java.lang.Object.wait(...)" while jstack puts the module inside the
+     parentheses.*/
+    var RE_WAIT_FRAME = /^(?:[\w.$@]+\/)?(?:java\.lang\.Object\.wait|(?:sun\.misc|jdk\.internal\.misc)\.Unsafe\.park|java\.util\.concurrent\.locks\.LockSupport\.park|java\.lang\.Thread\.sleep|java\.lang\.ref\.ReferenceQueue\.remove)/;
+
+    /*The frame a pile-up is named after: the first one below the waiting layer. Counting frames
+     instead — the first two, the first three — is a guess that has to be wrong somewhere: the
+     finalizer and Hadoop's statistics cleaner share their first three frames and only differ on
+     the fourth. A stack that is nothing but waiting keeps its top frame, so every thread still
+     lands in some group.*/
+    function workFrame(t) {
+      for (var i = 0; i < t.frames.length; i++) {
+        if (!RE_WAIT_FRAME.test(t.frames[i])) return t.frames[i];
+      }
+      return t.top;
     }
 
     // A real pool is recognised by the executor frame in the stack, not by the name:
@@ -1925,11 +1946,17 @@ Found 1 deadlock.
         var owner = all.filter(function (t) {
           return t.id === g.items[0].waitsFor.id;
         })[0];
+        /*Named from waitsFor, not from the group key: the key is the lock now, and printing it
+         where the holder belongs put a bare address under "Holder:". The lock is still worth
+         saying — one thread can hold two of them, and then two cards name the same holder.*/
+        var waitsFor = g.items[0].waitsFor;
+        var lock = (g.items[0].waitingOnType ? g.items[0].waitingOnType + " " : "") + g.key;
         out.push({
           level: "alert",
           title: nThreads(g.items.length) + " waiting on one lock",
-          text: "Holder: " + g.key + (owner ? ", currently in " + owner.top : " (not present in this dump)") +
-            ". The bottleneck is the holder, not the waiters.",
+          text: "Holder: " + waitsFor.name + " t@" + waitsFor.id +
+            (owner ? ", currently in " + owner.top : " (not present in this dump)") +
+            ". Lock: " + lock + ". The bottleneck is the holder, not the waiters.",
           items: g.items
         });
       });
@@ -1960,7 +1987,7 @@ Found 1 deadlock.
         // frame is Loom running, not work piling up in one place.
         return !isIdleWorker(t) && t.top !== NO_STACK && !isCarrier(t);
       }), function (t) {
-        return t.top;
+        return workFrame(t);
       }))
         .forEach(function (g) {
           if (g.items.length < manyThreads) return;
