@@ -5,6 +5,8 @@ the browser, never uploaded.
 
 **[Open the inspector](https://korotinm.github.io/java-thread-dump-inspector/)**
 
+*One of the [yank.run tools](https://yank.run/tools).*
+
 - No upload, no backend, no analytics, no external request — not even a font. Works offline.
 - Tabs: Findings, Pools, Population, Top frame, States, Creation order, Locks, Stack search, Compare.
 - A sample dump is built in, so the tool can be tried without going to find one first.
